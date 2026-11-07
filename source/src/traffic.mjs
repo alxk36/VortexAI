@@ -128,9 +128,14 @@ export class TrafficModel {
     if (thisTick < FLOOD_LIMIT) return;
     this.blocks.set(event.clientId, tick + BLOCK_TICKS);
     const reason = `${thisTick} requests in one tick (limit ${FLOOD_LIMIT})`;
-    this.autoBlocks.unshift({ clientId: event.clientId, tick, untilTick: tick + BLOCK_TICKS, reason });
+    // One log entry per client: a repeat offender moves to the top with a count.
+    const earlier = this.autoBlocks.findIndex(b => b.clientId === event.clientId);
+    const count = earlier >= 0 ? (this.autoBlocks[earlier].count ?? 1) + 1 : 1;
+    if (earlier >= 0) this.autoBlocks.splice(earlier, 1);
+    this.autoBlocks.unshift({ clientId: event.clientId, tick, untilTick: tick + BLOCK_TICKS, reason, count });
     this.autoBlocks = this.autoBlocks.slice(0, 12);
-    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Tripwire blocked ${event.clientId}: ${reason}. Expires in ${BLOCK_TICKS} ticks unless the admin unblocks it.` };
+    const again = count > 1 ? ` again (blocked ${count} times)` : '';
+    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Tripwire blocked ${event.clientId}${again}: ${reason}. Expires in ${BLOCK_TICKS} ticks unless the admin unblocks it.` };
   }
 
   _overload(sim, tick) {

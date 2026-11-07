@@ -26,7 +26,8 @@ test('roles receive bounded, disjoint views without secrets or simulation truth'
   assert.equal(search.events[0].kind,undefined);assert.equal(search.events[0].detail,undefined);
   assert.equal(search.events[0].rawBody,undefined);assert.equal(search.policies.apiKey,undefined);
   const builder=prepareContext('builder',snapshot);
-  assert.deepEqual(builder.recommendations.map(r=>r.id),['rec-1']);
+  assert.deepEqual(builder.recommendations.filter(r=>!r.applied).map(r=>r.id),['rec-1']);
+  assert.equal(builder.recommendations.find(r=>r.id==='rec-old').applied,true,'applied fixes stay visible, marked');
   assert.equal(builder.events,undefined);assert.equal(builder.policies,undefined);
   for(const role of AGENT_ROLES){
     const context=prepareContext(role,snapshot);

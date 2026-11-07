@@ -156,7 +156,7 @@ function botScoreMarkup(score) {
 }
 function autoBlocksMarkup(traffic) {
   const active = new Set((traffic?.blocked || []).map(b => b.clientId));
-  const rows = (traffic?.autoBlocks || []).slice(0, 4).map(b => `<li><span class="history-result ${active.has(b.clientId) ? 'succeeded' : 'blocked'}">${active.has(b.clientId) ? 'Blocked' : 'Lifted'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(b.reason)}${active.has(b.clientId) ? ` <button class="compact quiet" data-unblock="${escape(b.clientId)}">Unblock</button>` : ''}</li>`).join('');
+  const rows = (traffic?.autoBlocks || []).slice(0, 4).map(b => `<li><span class="history-result ${active.has(b.clientId) ? 'succeeded' : 'blocked'}">${active.has(b.clientId) ? 'Blocked' : 'Lifted'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(b.reason)}${b.count > 1 ? ` · blocked ${escape(b.count)} times` : ''}${active.has(b.clientId) ? ` <button class="compact quiet" data-unblock="${escape(b.clientId)}">Unblock</button>` : ''}</li>`).join('');
   return rows ? `<div class="attack-history"><h3>Searcher tripwire</h3><ol>${rows}</ol></div>` : '';
 }
 function overloadMarkup(traffic, running) {
