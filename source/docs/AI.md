@@ -23,14 +23,18 @@ flowchart LR
 
 Only the broker receives `ANTHROPIC_API_KEY`. No target service, agent, browser, event record, or prompt receives it. Requests always use `https://api.anthropic.com/v1/messages`; redirects and caller-supplied destinations are rejected. The broker has no generic proxy endpoint, shell, tool execution, or arbitrary file access API. Network isolation is supplied by Compose and verified separately; these application checks alone are not an escape-proof container boundary.
 
-The Attacker receives public resource identifiers and three legal scenario choices, not hidden policies, private resources, findings, or `_ground_truth`. Searcher receives a bounded configuration and event view, excluding attack-color labels, raw bodies, credentials, and log detail strings. Builder receives at most eight findings and twelve offered recommendations. It can order existing fix IDs and explain tradeoffs; it cannot invent or apply patches.
+The Attacker receives public resource identifiers, three legal scenario choices, and its own attack history (each finished run's scenario and whether it succeeded or was blocked, newest first), not hidden policies, control names, private resources, findings, or `_ground_truth`. It is asked to prefer untried paths, or ones whose latest attempt succeeded, and to choose nothing once every path is blocked; the rule fallback follows the same order. The runtime records the history from observed events in both modes: a run is blocked when a denied observation names a control.
 
-All model responses use a strict JSON schema and undergo independent checks for role authority, identifier membership, size, and shape. The output fields are `summary`, `scenarioId`, `evidenceIds`, and `recommendationIds`. Even a syntactically valid model response cannot supply a URL or command as an action. Model prose remains advisory and can be wrong; it is never a substitute for observed evidence or a verified replay.
+Searcher receives a bounded configuration and event view, excluding attack-color labels, raw bodies, credentials, and log detail strings. The view covers the full 160-event feed plus evidence retained on findings: identical repeated operations are collapsed into one entry with a count and up to eight citable ids, and rare operations are listed individually first, so attack evidence stays visible after normal traffic resumes. At most 48 entries are sent. Builder receives at most eight findings and twelve offered recommendations. It can order existing fix IDs and explain tradeoffs; it cannot invent or apply patches.
+
+All model responses use a strict JSON schema and undergo independent checks for role authority, identifier membership, size, and shape. The output fields are `summary`, `scenarioId`, `evidenceIds`, `recommendationIds`, and `labels`. `labels` classifies each cited item as `internal` (a weakness created by people with access: misconfiguration, excess permissions) or `external` (outsiders forcing their way in: password guessing, credential or identity abuse). The Searcher labels evidence it cites, the Builder labels fixes it lists, and the Attacker's labels are empty; a label naming anything not cited is rejected. Even a syntactically valid model response cannot supply a URL or command as an action. Model prose remains advisory and can be wrong; it is never a substitute for observed evidence or a verified replay.
+
+Opus 5.5's cyber safeguard declines even the Attacker's fixed-menu choice. Attacker requests therefore opt into Anthropic's server-side fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), which re-runs a cyber-category decline on Claude Opus 4.8. Only text after the last `fallback` block is parsed, and the serving model must be Opus 5.5, Opus 5, or Opus 4.8. Results carry `servedBy` when a fallback model answered, and the dashboard labels those runs. Searcher and Builder requests do not use the fallback.
 
 ## Configuration
 
 - `ANTHROPIC_API_KEY`: configure locally for the broker only; never paste it into chat or commit it.
-- `ANTHROPIC_MODEL`: `claude-opus-5-5` (the only model accepted by this integration).
+- `ANTHROPIC_MODEL`: `claude-opus-5-5` (the only model this integration requests; Attacker declines may be answered by Anthropic's server-side fallback, Opus 4.8).
 - `AGENT_CONTROL_TOKEN`: generated random token of at least 24 characters, shared only by the controller and agent services.
 - `AGENT_BROKER_TOKEN`: a different generated token of at least 24 characters, shared by agents and broker.
 - `AGENT_ROLE`: one of `attacker`, `searcher`, or `builder` per agent container.
@@ -47,7 +51,7 @@ Missing credentials, unavailable services, refusals, timeouts, incomplete replie
 | Broker | `POST /infer` with `{agent, context}` | Bearer `AGENT_BROKER_TOKEN` | Model or fallback result |
 | Agent/broker | `GET /health` | Internal network only | Liveness; broker also reports whether a key is configured |
 
-The result includes `agent`, `mode` (`model` or `fallback`), `provider`, `model`, the four decision fields, and a safe fallback reason where applicable. A configured key or successful health response is not a successful model inference.
+The result includes `agent`, `mode` (`model` or `fallback`), `provider`, `model` (the requested model), `servedBy` (only when a fallback model answered), the five decision fields, and a safe fallback reason where applicable. A configured key or successful health response is not a successful model inference.
 
 ## Verification
 

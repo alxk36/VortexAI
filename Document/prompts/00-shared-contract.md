@@ -1,5 +1,7 @@
 # VortexAI — Shared Contract v2 (paste this with EVERY agent prompt)
 
+> **Status: planning prompt, superseded.** The built system differs; see [README.md](README.md) and `source/docs/AI.md`.
+
 VortexAI (HackRPI 2026, "In The Clouds") is a local, in-memory cloud simulation with a 3D traffic view.
 **Alex's platform is the source of truth**: it owns the virtual cloud, enforces policies, emits events, and
 renders the UI. **Vaibhav's agents** (Attacker, Searcher, Builder) add Claude Opus 5.5 reasoning on top. They

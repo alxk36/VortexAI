@@ -1,5 +1,7 @@
 # Prompt: VortexAI Builder (Claude Opus 5.5)
 
+> **Status: planning prompt, superseded.** The built system differs; see [README.md](README.md) and `source/docs/AI.md`.
+
 > Paste `00-shared-contract.md` above this prompt. Read `README.md`, `docs/ARCHITECTURE.md` and
 > `src/simulation.mjs` before planning.
 
