@@ -159,6 +159,13 @@ function autoBlocksMarkup(traffic) {
   const rows = (traffic?.autoBlocks || []).slice(0, 4).map(b => `<li><span class="history-result ${active.has(b.clientId) ? 'succeeded' : 'blocked'}">${active.has(b.clientId) ? 'Blocked' : 'Lifted'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(b.reason)}${active.has(b.clientId) ? ` <button class="compact quiet" data-unblock="${escape(b.clientId)}">Unblock</button>` : ''}</li>`).join('');
   return rows ? `<div class="attack-history"><h3>Searcher tripwire</h3><ol>${rows}</ol></div>` : '';
 }
+function overloadMarkup(traffic, running) {
+  const latest = (traffic?.overloads || [])[0];
+  if (!latest) return '';
+  return running
+    ? `<div class="attack-history"><h3>Last overload at tick ${escape(latest.tick)}</h3><p class="muted small">${escape(latest.reason)}</p></div>`
+    : `<div class="attack-history overload"><h3>System overloaded at tick ${escape(latest.tick)}: simulation paused</h3><p class="small">${escape(latest.reason)}. The gateway's capacity protects the services behind it. Press Resume to continue.</p></div>`;
+}
 // End live traffic.
 function renderTraffic() {
   const traffic = state.traffic;
@@ -167,9 +174,9 @@ function renderTraffic() {
   if (config !== lastTrafficConfig) { $('traffic-users').value = traffic.users; $('traffic-bots').checked = traffic.botsEnabled; lastTrafficConfig = config; }
   const status = mode() !== 'simulation' ? 'Users and hidden bots run in the in-memory simulation.'
     : `${traffic.users} user${traffic.users === 1 ? '' : 's'} online · ${traffic.botsEnabled ? (traffic.revealed ? `${traffic.revealed.bots.length} bot${traffic.revealed.bots.length === 1 ? '' : 's'} revealed` : 'bots hidden among them') : 'no bots'} · ${traffic.clients.length} active client${traffic.clients.length === 1 ? '' : 's'}`;
-  const markup = `${botScoreMarkup(state.botScore)}${autoBlocksMarkup(traffic)}`;
+  const markup = `${botScoreMarkup(state.botScore)}${overloadMarkup(traffic, state.running)}${autoBlocksMarkup(traffic)}`;
   $('traffic-status').textContent = status;
-  if (markup !== lastTrafficMarkup) { const [score, blocks] = [botScoreMarkup(state.botScore), autoBlocksMarkup(traffic)]; $('bot-score').innerHTML = score; $('auto-blocks').innerHTML = blocks; lastTrafficMarkup = markup; }
+  if (markup !== lastTrafficMarkup) { const [score, blocks] = [botScoreMarkup(state.botScore), overloadMarkup(traffic, state.running) + autoBlocksMarkup(traffic)]; $('bot-score').innerHTML = score; $('auto-blocks').innerHTML = blocks; lastTrafficMarkup = markup; }
 }
 
 function renderFindings() {

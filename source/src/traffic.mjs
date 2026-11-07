@@ -13,6 +13,7 @@ const WINDOW_TICKS = 40;        // per-client history kept for the activity summ
 const FLOOD_LIMIT = 8;          // requests from one client in one tick that trip the breaker
 const BLOCK_TICKS = 20;         // how long the tripwire blocks a flooding client
 const CLIENT_SUMMARY_CAP = 70;
+const CAPACITY = 40;            // allowed gateway requests per tick before the whole system pauses
 
 export class TrafficModel {
   constructor({ random = Math.random } = {}) {
@@ -37,14 +38,22 @@ export class TrafficModel {
     this.blocks = new Map();       // clientId -> untilTick
     this.autoBlocks = [];          // tripwire log, newest first
     this.revealed = null;
+    this.overloads = [];           // capacity-breaker log, newest first
+    this.load = { tick: -1, requests: 0 };
+    this.overloadedTick = -1;
+    this.joinBurst = 0;
+    this.joined = { tick: -1, count: 0 };
   }
 
   configure({ users, bots }) {
     if (!Number.isInteger(users) || users < 1 || users > MAX_USERS) throw new Error(`users must be a whole number from 1 to ${MAX_USERS}.`);
     if (typeof bots !== 'boolean') throw new Error('bots must be true or false.');
+    const previous = this.users;
     this.users = users;
     this.botsEnabled = bots;
     this.reset();
+    // New users all arrive at the gateway in the next tick, like a sudden wave of sign-ups.
+    this.joinBurst = Math.max(0, users - previous);
   }
 
   /** Normal request chains per tick grow with the number of users online. */
@@ -58,6 +67,13 @@ export class TrafficModel {
   tick(sim) {
     const tick = sim._tick;
     for (const [clientId, until] of this.blocks) if (until < tick) this.blocks.delete(clientId);
+    if (this.joinBurst) {
+      this.joined = { tick, count: this.joinBurst };
+      for (const clientId of this.userIds.slice(-this.joinBurst)) {
+        sim._emit({ kind: 'normal', clientId, source: 'client', target: 'gateway', protocol: 'HTTPS', action: 'request', outcome: 'allowed', authenticated: true, principal: 'application-user', bytes: 820, detail: 'A user who just joined opens the application.' });
+      }
+      this.joinBurst = 0;
+    }
     for (const bot of this.bots) {
       if (tick < bot.startTick) continue;
       if (bot.behavior === 'credential-stuffing' && this.random() < 0.7) {
@@ -96,6 +112,13 @@ export class TrafficModel {
   /** Called for every event that carries a client address. Runs the flood tripwire. */
   observe(event, sim) {
     const tick = event.tick;
+    // Capacity breaker: too many allowed gateway requests in one tick pauses the whole system.
+    if (event.target === 'gateway' && event.action === 'request' && event.outcome === 'allowed') {
+      if (this.load.tick !== tick) this.load = { tick, requests: 0 };
+      this.load.requests += 1;
+      if (this.overloadedTick === tick) this.overloads[0].requests = this.load.requests;
+      else if (this.load.requests >= CAPACITY) this._overload(sim, tick);
+    }
     const list = this.history.get(event.clientId) ?? [];
     list.push({ tick, action: event.action, target: event.target, outcome: event.outcome, principal: event.principal, authenticated: event.authenticated === true });
     while (list.length && list[0].tick <= tick - WINDOW_TICKS) list.shift();
@@ -107,7 +130,15 @@ export class TrafficModel {
     const reason = `${thisTick} requests in one tick (limit ${FLOOD_LIMIT})`;
     this.autoBlocks.unshift({ clientId: event.clientId, tick, untilTick: tick + BLOCK_TICKS, reason });
     this.autoBlocks = this.autoBlocks.slice(0, 12);
-    sim._agents.searcher = { status: 'Auto-blocked client', detail: `Tripwire blocked ${event.clientId}: ${reason}. Expires in ${BLOCK_TICKS} ticks unless the admin unblocks it.` };
+    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Tripwire blocked ${event.clientId}: ${reason}. Expires in ${BLOCK_TICKS} ticks unless the admin unblocks it.` };
+  }
+
+  _overload(sim, tick) {
+    this.overloadedTick = tick;
+    sim.running = false;
+    this.overloads.unshift({ tick, requests: this.load.requests, capacity: CAPACITY, joined: this.joined.tick === tick ? this.joined.count : 0 });
+    this.overloads = this.overloads.slice(0, 12);
+    sim._agents.searcher = { status: 'System overloaded', detail: `The gateway reached its capacity of ${CAPACITY} requests in one tick, so the simulation paused to protect the services behind it. Resume when ready.` };
   }
 
   unblock(clientId) {
@@ -153,6 +184,8 @@ export class TrafficModel {
       clients: this.clients(tick),
       blocked: [...this.blocks.entries()].filter(([, until]) => until >= tick).map(([clientId, untilTick]) => ({ clientId, untilTick })),
       autoBlocks: structuredClone(this.autoBlocks),
+      capacity: CAPACITY,
+      overloads: this.overloads.map(o => ({ ...o, reason: `${o.joined ? `${o.joined} users joined at once: ` : ''}${o.requests} requests in one tick (capacity ${o.capacity})` })),
       revealed: this.revealed ? structuredClone(this.revealed) : null,
     };
   }

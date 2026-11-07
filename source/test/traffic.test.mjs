@@ -95,8 +95,9 @@ test('a tripwire block expires on its own', () => {
 
 test('ordinary users alone never trip the breaker or look suspicious to the fallback', async () => {
   const sim = new Simulation({ random: seeded(11) });
-  sim.setTraffic({ users: 60, bots: false });
+  for (const users of [20, 40, 60]) { sim.setTraffic({ users, bots: false }); ticks(sim, 2); } // ramp up below capacity
   const snap = ticks(sim, 60);
+  assert.equal(snap.running, true);
   assert.deepEqual(snap.traffic.autoBlocks, []);
   const result = await runAgent('searcher', snap);
   assert.deepEqual(result.suspects, []);
