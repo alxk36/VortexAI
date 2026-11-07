@@ -2,7 +2,6 @@ HackRPI 2026
 Subject : Cloud
 
 
-
 VortexAI - Cloud Security AI
 Team Alex & Vaibhav
 
@@ -10,41 +9,76 @@ Team Alex & Vaibhav
 Name Meaning : Suggests swirling, real-time data interception
 
 
+____________________________________________________________________________
+Identify Problem
+
 How do cloud services get infiltrated?
-E - external, 
+E - external, outer threats forcing their way in by overloading the system or bruteforcing, identity abuse, etc..
 I - internal, people with access causing issues due to mistakes leading to hacking
 
 1. Identity & Credential Abuse                      (E)
-    Valid Account Abuse                 : Attackers target leaked API keys
-    Brute-Forcing & Password Spraying   : Exploiting weak or reused passwords to gain initial access
-    Federated Trust Exploitation        : Abusing misconfigured OpenID Connect (OIDC) or trust relationships between external platforms
+    Valid Account Abuse: Attackers target leaked API keys
+    Brute-Forcing & Password Spraying: Exploiting weak or reused passwords to gain initial access
+    Federated Trust Exploitation: Abusing misconfigured OpenID Connect (OIDC) or trust relationships between external platforms
 
 2. Infrastructure Misconfigurations                 (I)
-    Exposed Storage Buckets         : Failing to set storage to private, allowing anyone with the internet to catalog and download data
-    Over-Permissive IAM Roles       : Granting excessive permissions to a user or service account, which allows an attacker who 
-        compromises a minor service to instantly escalate privileges to root or global administrator
-    Open Ports & Public Endpoints   : Leaving database ports or management consoles fronted directly on the open web instead of hiding 
-        them behind a secure virtual network or VPN
+    Exposed Storage Buckets: Failing to set storage to private, allowing anyone with the internet to catalog and download data
+    Over-Permissive IAM Roles: Granting excessive permissions to a user or service account, which allows an attacker who compromises a minor service to instantly escalate privileges to root or global administrator
+    Open Ports & Public Endpoints: Leaving database ports or management consoles fronted directly on the open web instead of hiding them behind a secure virtual network or VPN
 
 3. Supply Chain & Third-Party App Vulnerabilities   (E)
-    Vulnerable Third-Party Integrations : Exploiting vulnerabilities within SaaS tools, plugins, or vendor software that have pre-authorized
-        API access into the core cloud environment
-    Poisoned Container Images           : Injecting pre-built malicious application containers (Docker) into corporate registries, which 
-        deploy malware or crypto-miners automatically when run
+    Vulnerable Third-Party Integrations: Exploiting vulnerabilities within SaaS tools, plugins, or vendor software that have pre-authorized API access into the core cloud environment
+    Poisoned Container Images: Injecting pre-built malicious application containers (Docker) into corporate registries, which deploy malware or crypto-miners automatically when run
 
 4. Cloud-Native Architecture Exploitation           (I)
-    Container Escape            : Exploiting flaws in virtualized infrastructure or specialized hardware tools (like the host toolkit) 
-        to break out of an isolated application container and hijack the host operating system
-    Serverless Functions Abuse  : Subverting short-lived runtime environments (like AW Lambda or Azure Functions) to execute unauthorized 
-        code, bypass security tracking, or trigger massive denial-of-service loops
+    Container Escape: Exploiting flaws in virtualized infrastructure or specialized hardware tools (like the host toolkit) to break out of an isolated application container and hijack the host operating system
+    Serverless Functions Abuse: Subverting short-lived runtime environments (like AWS Lambda or Azure Functions) to execute unauthorized code, bypass security tracking, or trigger massive denial-of-service loops
 
 5. Control Plane & API Hijacking                    (E)
-    Living off the Cloud (LotC)     : Hiding command-and-control operations inside legitimate, trusted cloud services like Google Sheets or 
-        OpenAI APIs to mask data exfiltration as normal network traffic
-    Resource Theft (Cryptojacking)  : Hijacking scalable compute infrastructure to run unauthorized cryptocurrency mining operations, 
-        leaving the victim company with devastating cloud bills
-
-
+    Living off the Cloud (LotC): Hiding command-and-control operations inside legitimate, trusted cloud services like Google Sheets or OpenAI APIs to mask data exfiltration as normal network traffic
+    Resource Theft (Cryptojacking): Hijacking scalable compute infrastructure to run unauthorized cryptocurrency mining operations, leaving the victim company with devastating cloud bills
 ____________________________________________________________________________
+Outline for Solution
+
+-----------------------------------------------------------------
+|				|				|
+|      Attacker (External) 	|	Searcher (Internal)	|
+|				|				|
+-----------------------------------------------------------------
+				↓
+		---------------------------------
+		|				|
+		|	Builder Suggests	|
+		|				|
+		---------------------------------
+
+	
+Attacker
+Constantly attack the upholding structure in a virtual system to strengthen security
+Simulate randomized attacks onto the cloud
+
+Searcher
+Looks for suspicious activity
+Like a bot hovering the system for live activity
+Run network sweeps to monitoring for security discrepancies
+
+Builder
+After diagnosing the problem/weak-point in the system, it suggest the admin how to improve it
+____________________________________________________________________________
+Prompting *Make sure all codes are commented properly explaining its purpose and doings*
+
+Attacker
+Creating
+
+**Follow these instructions at all times**
+Always create a virtual system that could not escape to the original system or any outside networks.
+Make sure they are rewarded for the aggression as a training tool but as soon as it escapes the system, it should be penalized to termination. 
+
+
+
+
+
+Searcher
+
 
 

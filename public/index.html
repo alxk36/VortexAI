@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0a101b">
+  <title>VortexAI — Cloud security lab</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="VortexAI home"><span class="brand-mark">V</span><span>Vortex<span class="brand-light">AI</span></span><span class="lab-tag">LAB</span></a>
+    <span class="top-description">CLOUD SECURITY / SIMULATION WORKSPACE</span>
+    <span class="local-badge"><span class="status-dot"></span> Local simulation</span>
+  </header>
+  <main>
+    <div class="page-heading"><div><p class="eyebrow">OBSERVE. CHALLENGE. STRENGTHEN.</p><h1>A living view of your cloud.</h1><p class="subtitle">Explore traffic, surface weak points, and test the fix in one isolated model.</p></div><div class="session-actions"><button id="pause">Pause simulation</button><button id="reset" class="quiet">Reset lab</button></div></div>
+    <div class="notice"><span class="notice-label">SIMULATED ENVIRONMENT</span> Synthetic events only · No cloud account · No real attack traffic · Rule-based agents</div>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div class="workspace">
+      <aside class="scenarios panel">
+        <div class="section-heading"><span class="eyebrow">01 / CHALLENGE</span><span class="small-tag">ATTACKER</span></div>
+        <h2>Test the perimeter</h2><p class="muted small">Run a scenario against the virtual cloud. Watch the path, then review the evidence.</p>
+        <div id="scenarios"><p class="muted">Connecting to the local lab…</p></div>
+        <div class="how-to"><span class="eyebrow">THE FEEDBACK LOOP</span><ol><li>Run a simulated attack</li><li>Searcher diagnoses events</li><li>Review Builder's proposal</li><li>Apply the fix and replay</li></ol><p>Changes affect this shared local session only. Reset restores the vulnerable baseline.</p></div>
+      </aside>
+      <section class="map-panel panel" aria-labelledby="map-title">
+        <div class="map-header"><div><span class="eyebrow">02 / OBSERVE</span><h2 id="map-title">Cloud traffic topology</h2></div><span id="live-label" class="live-label">CONNECTING</span></div>
+        <div class="map-toolbar"><div class="legend"><span><i class="legend-dot normal"></i>Normal</span><span><i class="legend-dot attack"></i>Attack</span><span><i class="legend-dot blocked"></i>Blocked</span></div><button id="home-view" class="quiet compact">Reset view</button></div>
+        <div class="canvas-wrap"><canvas id="topology" aria-label="Rotatable 3D cloud topology. Animated dots represent synthetic events, not captured packets. Use the resource selector below for accessible resource details."></canvas><span class="map-caption">DRAG TO ORBIT · SCROLL TO ZOOM</span><div class="axis-label">VIRTUAL PRIVATE CLOUD<br><strong>vortex-lab / local</strong></div></div>
+        <div class="resource-inspector"><label for="resource">Inspect resource</label><select id="resource"><option value="">Select a node…</option></select><p id="resource-detail">Select a resource on the map to inspect its role.</p></div>
+        <div class="metrics"><div><span id="total-events">0</span><label>Events generated</label></div><div><span id="attack-events">0</span><label>Attack events</label></div><div><span id="blocked-events">0</span><label>Blocked events</label></div><div><span id="open-findings">0</span><label>Open findings</label></div></div>
+      </section>
+      <aside class="agents panel"><div class="section-heading"><span class="eyebrow">03 / RESPOND</span><span class="small-tag">3 AGENTS</span></div><h2>Your security team</h2><div id="agents"></div><div class="findings-heading"><h3>Findings & recommendations</h3><span id="finding-count" class="small-tag">0</span></div><div id="findings"><div class="empty-state">No findings yet.<br><span>Launch a scenario to begin the investigation.</span></div></div></aside>
+    </div>
+    <section class="event-panel panel"><div class="event-heading"><div><span class="eyebrow">TELEMETRY / EVENT STREAM</span><h2>Every hop tells a story.</h2></div><label class="event-filter">Show <select id="event-filter"><option value="all">All traffic</option><option value="security">Attack & blocked</option><option value="normal">Normal traffic</option></select></label></div><div class="table-scroll"><table><thead><tr><th>Tick</th><th>Source → Destination</th><th>Action</th><th>Protocol</th><th>Result</th></tr></thead><tbody id="events"></tbody></table></div><p class="table-note">Latest 24 matching events · Synthetic data-plane and identity audit events · Animation follows event records</p></section>
+    <details class="architecture panel"><summary>How traffic and the three agents fit together <span>Architecture guide ↗</span></summary><div class="architecture-content"><div><h3>Application traffic</h3><p>Client → Gateway → Load balancer → Application → Database / Storage. Responses return to the client. Identity permissions govern access to resources; identity calls are control-plane events, not another hop for every request.</p><h3>Security feedback</h3><p>Attacker → Synthetic actions → Cloud policy model → Event stream → Searcher findings → Builder recommendations → Admin approval → Updated policy → Attack replay.</p></div><div><h3>What this lab models</h3><p>Public storage exposure, repeated credential failures, and excessive service permissions. Searcher evaluates observed activity. Builder maps findings to explainable policy changes.</p><h3>What comes next</h3><p>Add isolated service containers and telemetry collectors, then replace agent rules with constrained AI decisions. This prototype is an in-memory model, not a VM, packet capture, or a production security tool.</p></div></div></details>
+    <footer><span>VortexAI <span class="muted">/ A cloud you can learn from.</span></span><span>PROVIDER-NEUTRAL · LOCAL LAB</span></footer>
+  </main>
+</body>
+</html>
