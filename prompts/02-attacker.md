@@ -1,121 +1,88 @@
-# Prompt: VortexAI Attacker (external threats)
+# Prompt: VortexAI Attacker (Claude Opus 5.5)
 
-> Paste `00-shared-contract.md` above this prompt. It defines the Environment, Finding, taxonomy, repo layout and API.
+> Paste `00-shared-contract.md` above this prompt. Read `README.md`, `docs/ARCHITECTURE.md` and
+> `src/simulation.mjs` before planning.
 
 ## 1. Role & Context
-- **Persona:** You are a senior red-team engineer and Python developer building an **attack simulator**
-  (a breach-and-attack-simulation engine) for a 24-hour hackathon MVP. Every attack is a state transition
-  on an in-memory JSON model. Nothing touches a real system.
-- **Product purpose:** The Attacker clones the simulated cloud at different security levels, runs randomized
-  multi-step attack chains against each clone, and reports which attacks worked, which were blocked, and
-  which were detected.
-- **Audience:** A cloud admin watching the VortexAI dashboard. Downstream, the Builder module (built separately
-  by a teammate) reads these findings to recommend fixes. The money shot of the demo: *the same cloud gets
-  breached 9 times out of 10 when sloppy, and 1 time out of 10 when hardened.*
+- **Persona:** You are a senior red-team engineer and Node.js developer adding an **AI attack planner** to an
+  existing breach-and-attack *simulation* for a 24-hour hackathon MVP. Every action is an allowlisted
+  state transition inside an in-memory model; nothing touches a real system.
+- **Product purpose:** Given an objective, the Attacker uses Claude Opus 5.5 to compose a multi-step attack
+  plan from the platform's action catalog, adapting to what worked or got blocked in earlier attempts. The
+  platform executes the plan tick by tick, so the 3D map shows it live.
+- **Audience:** A cloud admin and hackathon judges. The demo moment: the admin fixes one weakness, the AI
+  attacker *adapts* and finds another path, and the admin fixes that too.
 
 ## 2. Core Function & Scope
-**Primary action:** The user clicks **Launch campaign**. The Attacker runs N attack chains against the
-Hardened, Default, and Sloppy clones of one seed and shows the success rate per level, plus a step-by-step
-replay of one featured run.
+**Primary action:** The admin picks an objective and clicks **Launch AI attack**. A few seconds later, a
+named plan with per-step reasoning starts animating on the map.
 
 **Key features (build these, in order):**
-1. **Technique catalog:** `vortex/attacker/techniques.py`. Each technique is data plus two pure functions:
-   ```python
-   Technique(id, category, phase,            # phase: "initial_access" | "escalation" | "impact"
-             targets(view, state) -> list[resource_id],   # where preconditions hold
-             resolve(env, state, target, rng) -> StepResult)  # success / blocked / detected, plus new state
-   ```
-   | technique | cat | phase | Preconditions | Blocked or weakened by |
-   |---|---|---|---|---|
-   | `leaked_key_abuse` | 1 | initial_access | a key with `exposed_publicly` | key `age_days` < 30 halves success |
-   | `password_spray` | 1 | initial_access | a user with `mfa: false` | `rate_limiting` halves it; strong, non-reused password blocks it |
-   | `oidc_trust_abuse` | 1 | initial_access | OIDC role with wildcard `subject` | — |
-   | `vulnerable_integration` | 3 | initial_access | integration `version_outdated` | narrow scopes limit the foothold |
-   | `poisoned_image` | 3 | initial_access | unsigned or `latest` image | `image_signing_required` blocks it |
-   | `open_port` | 2 | initial_access | DB/admin port open to `0.0.0.0/0` | — |
-   | `overpermissive_iam` | 2 | escalation | foothold identity's role has wildcard actions | — |
-   | `container_escape` | 4 | escalation | foothold on a `privileged` container or `docker.sock` mount | — |
-   | `serverless_abuse` | 4 | escalation | public function whose role is broader than the foothold | `max_concurrency` set halves it |
-   | `public_bucket` exfil | 2 | impact | readable bucket (public, or via a compromised role) | `egress_filtering` blocks non-public exfil |
-   | `living_off_the_cloud` | 5 | impact | any foothold; data reachable | `egress_filtering` blocks it |
-   | `cryptojacking` | 5 | impact | role can create compute | `budget_alerts` means detected within 1 step |
+1. **Planner job:** `src/agents/attacker.mjs` exports `createAttacker({ simulation, claude })`. It returns
+   `{ plan(objective), busy, history }`. A plan:
+   1. Builds an **outsider view**: only internet-facing nodes (`gateway`, `iam`, `storage`), the catalog
+      entries, and the attacker's own previous plans with each step's outcome (allowed or denied, plus the
+      `control` that blocked it). The planner never sees policy values directly. It learns them from outcomes.
+   2. Calls Claude, effort `medium`, framed as *choosing moves in a tabletop security simulation from a fixed
+      menu*. Never ask the model for commands, payloads, exploit code or real-world targets.
+   3. Expects structured output:
+      `{ name, objective, steps: [{ actionId, reasoning }], expectedWeakness, ifBlocked }`.
+   4. Validates the output: every `actionId` is in `simulation.actionCatalog()`; 1–8 steps; ordering respects
+      `requires`. If it's invalid once, make one retry that includes the validation error. If it's invalid
+      again, use the fallback.
+   5. Calls `simulation.runPlan(...)`.
+2. **Adaptation:** keep a session `history` of `{ plan, perStepOutcome, blockedBy[] }`, read from
+   `observations()` after the plan finishes. The next plan must avoid controls that are known to block.
+   - **Objective `surprise-me`:** pick the objective most likely to succeed given the history.
+   - **Nothing left:** if every known path is blocked, return a plan anyway and report
+     `status: 'All known paths blocked'`. This is a good demo ending.
+3. **Fallback (rules mode):** a missing key, a refusal (`stop_reason === 'refusal'`; Opus 5.5 can decline
+   anything that looks like offensive security), an error, a timeout or a second invalid plan → run the
+   built-in scenario for the objective:
+   - `data-exfiltration` → `exposed-storage`
+   - `account-takeover` → `credential-abuse`
+   - `privilege-escalation` → `lateral-movement`
+   - `surprise-me` → the first scenario not yet blocked
 
-   **Detection:** each step has a detection chance. 0% with no logging, 30% with `logging`, 70% with
-   `logging` and `alerting`. If a step is detected, the run ends as `contained`.
-2. **Fog of war:** `AttackerView`. The attacker plans only from what an outsider could see: public IPs and
-   ports, public buckets and triggers, exposed keys ("found on GitHub"), user names ("from LinkedIn"),
-   integration vendors. After compromising an identity, the view expands to that identity's roles and
-   reachable resources. **The planner never receives the raw Environment or `_ground_truth`.**
-3. **Engine and planners:** `vortex/attacker/engine.py` runs one chain of at most 8 steps:
-   initial access → (escalation)* → impact. Two interchangeable planners pick the next `(technique, target)`:
-   - `ScriptedPlanner`: deterministic and weighted-random by phase and impact, seeded RNG. Used for bulk campaign runs.
-   - `AIPlanner`: sends the current `AttackerView` plus the list of legal `(technique, target)` options to
-     the OpenAI model named in `OPENAI_MODEL` and gets back JSON `{technique, target_resource_id, reasoning}`
-     via structured outputs (a JSON schema). Used only for the **featured run**, to keep cost and latency low. Validate the choice is in
-     the legal list. On an invalid choice, an API error, a timeout, a missing key, or
-     a refusal or empty/unparseable reply, fall back to `ScriptedPlanner` for that step and record
-     `planner: "scripted_fallback"`. The prompt to the model must frame the task as choosing moves in a
-     tabletop security simulation from a fixed menu; never ask it for commands, payloads or exploit code.
-4. **Campaign, findings and API:** `POST /api/attacker/campaign` accepting either `{seed, levels, runs_per_level}`
-   (the platform generates each clone) or `{env_ids, runs_per_level}` (the Builder's patched clones), and the CLI
-   `python -m vortex.attacker --seed 42 --runs 20`. Output an `AttackRun` per run:
-   ```jsonc
-   { "run_id": "run-42-sloppy-07", "env_id": "env-42-sloppy", "planner": "scripted",
-     "steps": [{ "n": 1, "phase": "initial_access", "technique": "password_spray", "category": 1,
-                 "target": "user-ana", "result": "success", "detected": false,
-                 "reasoning": "...", "narrative": "Sprayed 3 common passwords at user-ana (no MFA) — success." }],
-     "outcome": "compromised",   // "compromised" | "contained" | "failed"
-     "blast_radius": { "resources_compromised": 6, "pii_exfiltrated": true, "est_crypto_cost_usd_per_day": 4120 } }
-   ```
-   Also convert every attempted step into a `Finding` (`source: "attacker"`, `origin: "external"`,
-   `exploited` true or false, `detected`, `attack_run_id`). Blocked attempts matter: they show the Builder
-   which controls worked. Return a `summary` with success, containment and detection rates per level and
-   mean steps-to-compromise. Save to `data/runs/` and `data/findings/{env_id}.attacker.json`.
+   Record `mode: 'rules'` and the reason.
 
-**Not building yet:** auth, a database, real cloud APIs, any real networking or exploitation, live WebSocket
-streaming (fake the replay animation client-side), the Searcher or Builder, attacker "learning" across runs.
+**Stretch (only after 1–3 work): breach-rate campaign.** Ask Alex for `simulation.fork({ policies })`, a
+headless clone. Run the same plan against three policy presets (all off / one on / all on), ticking each
+fork to completion. Return a success rate per preset for a "90% → 0%" chart.
+
+**Not building yet:** new nodes or policies (ask Alex), real networking of any kind, multi-agent
+self-play, attacker memory across server restarts, any UI code.
 
 ## 3. Tech Stack & Architecture
-- Python 3.12+, FastAPI router, Pydantic v2, pytest. Official `openai` Python SDK on the team's OpenAI plan:
-  key from `OPENAI_API_KEY`, model ID from `OPENAI_MODEL` (never hard-coded), structured outputs for the
-  move, and the lowest reasoning effort the model supports (it's a quick move choice). Wrap the client in
-  `vortex/llm.py` so all three agents call the AI the same way.
-- `vortex/shared/` is the environment platform, owned by a teammate. Don't write it. Use only the platform
-  interface from the contract, and the `tests/fixtures/` environments until it lands.
-- Frontend: React + Vite + TypeScript + Tailwind + Recharts; component `web/src/panels/AttackerPanel.tsx`.
-- **Data:** JSON files under `data/`. No DB. Everything is reproducible from `(seed, level, run index)`.
-- **Tests:**
-  - every technique's `targets()` returns nothing on a fully hardened fixture
-  - the same seed gives an identical campaign
-  - over seeds 1–10 with 20 runs each, success rate is strictly ordered sloppy > default > hardened
-  - the planner input contains no `_ground_truth` key
-  - the AI planner falls back cleanly when the client raises an error
+- Node.js 22+, ES modules, no build step. Dependencies: `@anthropic-ai/sdk` and `zod`.
+- Claude through `src/agents/claude.mjs` (contract §5): `claude-opus-5-5`, effort `medium`, `messages.parse`
+  + `zodOutputFormat`, refusal check first, 45 s timeout.
+- Route: `POST /api/agents/attacker/plan { objective }` → 202 `{ jobId }`; 409 if a scenario or plan is
+  active or the attacker is busy.
+- **Tests** (`test/agents/attacker.test.mjs`, with a fake `claude`):
+  - an unknown `actionId` or a `requires` violation is rejected, retried once, then falls back
+  - a refusal falls back to the mapped scenario
+  - the outsider view contains no policy values, no `kind`, and no internal-only nodes
+  - after `storagePrivate` blocks a plan, the next request's history includes `blockedBy: ['storagePrivate']`
+  - plans are capped at 8 steps
 
-## 4. UI/UX & State Requirements
-**Panel: `AttackerPanel`** (one card in the dashboard grid, 16px padding, 12px radius).
-- **Header row:** title "Attacker · External"; seed input; level multi-select (all three on by default);
-  runs-per-level stepper (default 20); planner toggle for the featured run (Scripted / AI); primary red button
-  **Launch campaign**.
-- **Stat tiles** (3 columns): breach rate on Sloppy vs Hardened ("90% → 10%"); detection rate; estimated
-  cryptojacking cost per day on Sloppy.
-- **Bar chart:** outcome per security level, stacked bars (compromised red / contained amber / failed green).
-- **Featured run replay:** vertical stepper. Each step shows a phase label, technique, target (monospace), a
-  result icon (success / blocked / detected), the one-line `narrative`, and, if the AI planned it, its
-  `reasoning` in muted italic. Reveal steps one at a time, 400ms apart, with a **Skip** link. Finish with an
-  outcome banner ("BREACHED: PII exfiltrated from bkt-customers" or "CONTAINED at step 3").
-- **States (all required):**
-  - *Loading:* button disabled, progress text "Running 60 attack chains…", skeleton chart.
-  - *Empty:* before the first launch, an illustration-free placeholder: "Launch a campaign to stress-test this cloud."
-  - *Error:* inline banner with **Retry**. If only the AI planner failed, show a small notice
-    "AI planner unavailable — featured run used scripted planner" instead of an error.
-  - *Success:* chart, tiles and replay.
-- **Design vocabulary:** dark theme matching the Searcher panel (`slate-950` / `slate-900`), Inter plus
-  JetBrains Mono, 8px spacing, works from 768px to 1440px; the chart and stepper stack vertically under 1024px.
+## 4. UI/UX & State Requirements (data you expose; Alex renders it)
+- `snapshot().activeScenario` for AI plans includes `source: 'ai-attacker'`, `name`, and the per-step
+  `reasoning`. Alex shows the current step's reasoning as a caption on the 3D map.
+- `snapshot().agents.attacker` = `{ status, detail, mode }`. Statuses: `Ready`, `Planning…`, `Attacking`,
+  `Blocked`, `Completed`, `All known paths blocked`, `Rules mode`.
+- **History panel:** each past plan with a ✓ (step allowed) / ⛔ (denied, plus the control) per step.
+- **States:**
+  - *Loading:* `Planning…` with the launch button disabled.
+  - *Empty:* "Launch an AI attack to test this cloud."
+  - *Error / fallback:* "AI planner unavailable — running built-in scenario."
+  - *Success:* the plan animates on the map.
 
 ## 5. Guardrails & Clarifying Questions
-- **Simulation only.** No sockets, no `subprocess`, no HTTP other than the OpenAI API, no real commands,
-  payloads, credentials or exploit strings, even as flavor text. Techniques only change Python dicts.
-- The planner sees only the `AttackerView`. Detection and planning code never read `_ground_truth`.
-- Do not change the shared schema on your own. If you need a new field, stop and ask, because the Searcher and Builder depend on it.
-- **Before writing any code, ask me clarifying questions about anything ambiguous in this prompt or the
-  contract.** Then propose a file-by-file plan and wait for my OK.
+- **Simulation only.** No sockets, `fetch` (except the Anthropic SDK), `child_process` or filesystem writes
+  in agent code. No real commands, payloads, hostnames or exploit strings, even in prompts or flavor text.
+- The model chooses only catalog IDs. The platform decides every outcome. Never call private `_` methods
+  on `Simulation`.
+- Don't edit `src/simulation.mjs`, `server.mjs` or `public/`. Write hook requests for Alex instead.
+- **Before writing any code, ask me clarifying questions about anything ambiguous.** Then propose a
+  file-by-file plan and wait for my OK.

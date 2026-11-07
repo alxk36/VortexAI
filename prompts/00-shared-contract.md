@@ -1,148 +1,126 @@
-# VortexAI — Shared Contract (paste this with EVERY module prompt)
+# VortexAI — Shared Contract v2 (paste this with EVERY agent prompt)
 
-VortexAI is a HackRPI 2026 ("In The Clouds") project: an AI cloud-security system with three
-independent agents running on top of a shared environment platform. The agents never call each other
-directly. They only share the data shapes and interfaces below.
+VortexAI (HackRPI 2026, "In The Clouds") is a local, in-memory cloud simulation with a 3D traffic view.
+**Alex's platform is the source of truth**: it owns the virtual cloud, enforces policies, emits events, and
+renders the UI. **Vaibhav's agents** (Attacker, Searcher, Builder) add Claude Opus 5.5 reasoning on top. They
+only *read observations* and *submit proposals*. The platform validates and executes everything.
 
-| Module | Role | Origin it covers | Owner |
+Read `README.md` and `docs/ARCHITECTURE.md` before starting. This contract summarizes them; if they disagree,
+the code in `src/simulation.mjs` wins.
+
+## 1. Ownership
+
+| Area | Files | Owner |
+|---|---|---|
+| Platform: simulation engine, policies, scenarios, rule-based detection | `src/simulation.mjs` | Alex |
+| HTTP server, clock, static assets | `server.mjs` | Alex |
+| Frontend: 3D map, dashboard | `public/` | Alex |
+| Platform tests | `test/simulation.test.mjs`, `test/server.test.mjs` | Alex |
+| Claude client wrapper | `src/agents/claude.mjs` | Vaibhav |
+| AI agents | `src/agents/attacker.mjs`, `searcher.mjs`, `builder.mjs` | Vaibhav |
+| Agent HTTP routes | `src/agents/router.mjs` | Vaibhav |
+| Agent tests | `test/agents/*.test.mjs` | Vaibhav |
+
+Don't edit files you don't own. If you need a change in someone else's file, write the exact change as a
+request in the team's chat.
+
+## 2. The platform as built (do not redesign)
+
+- **Nodes:** `client`, `attacker`, `gateway`, `lb`, `app`, `iam`, `db`, `storage`, `logs`. Each has a label,
+  zone, 3D position and description.
+- **Policies** (all `false` at reset = vulnerable): `storagePrivate`, `requireMfa`, `databaseLeastPrivilege`.
+  Each maps to a remediation in `REMEDIATIONS` with a title, description and tradeoff.
+- **Scenarios:** `exposed-storage`, `credential-abuse`, `lateral-movement`. Each is a fixed list of steps; one
+  step runs per tick.
+- **Event:** `{ id, tick, time, source, target, protocol, action, outcome, bytes, kind, principal,
+  authenticated, authentication?, control?, detail }`.
+  - `kind` (normal / attack / blocked) is simulator ground truth for the visuals only.
+  - **Agents must never see `kind`.**
+- **Finding:** `{ id, title, severity, nodeId, policyKey, evidence[], evidenceDetails[], status, recommendationId, firstSeenTick }`.
+- **Recommendation:** `{ id, findingId, title, description, tradeoff, policyKey, applied, validation }`.
+- **The loop:** a scenario runs → rules in `_observe` create a finding → Builder recommendation → the admin
+  clicks apply (`POST /api/recommendation`) → replay is blocked → recommendation `validation: 'blocked-replay'`.
+- **Server:**
+  - binds to loopback only, with Host/Origin checks and 4 KiB JSON bodies
+  - `requestTimeout` is 10 s
+  - the UI polls `GET /api/state`, which returns `simulation.snapshot()`
+
+The existing rule-based detection and remediation text stay in place as the **fallback**. When Claude is
+unavailable, the app behaves exactly as it does today.
+
+## 3. Agent hooks Alex adds to `Simulation` (small, about 80 lines)
+
+| Method | Does | Validation the platform performs |
+|---|---|---|
+| `observations({ sinceTick = 0, limit = 80 })` | Returns recent events **without `kind`**, newest first | Read-only copies |
+| `actionCatalog()` | Returns the allowlisted atomic attack actions: `{ id, source, target, action, protocol, principal, authentication?, gatedBy?, requires?, description }` | Static list |
+| `runPlan({ objective, steps: [actionId], rationale: [string] })` | Queues an AI attack plan like a scenario, one step per tick; `activeScenario.source = 'ai-attacker'` | Every step ID is in the catalog; 1–8 steps; no active scenario; `requires` (such as an admin session) is checked at run time |
+| `submitFinding({ title, severity, nodeId, policyKey, evidenceIds, explanation, origin })` | Adds or merges an AI finding (`detectedBy: 'ai'`) | `nodeId` exists; every evidence ID exists and is `allowed`; `severity` ∈ critical/high/medium/low; `policyKey` ∈ `REMEDIATIONS` keys or `null`; `origin` ∈ internal/external; strings ≤ 400 chars; dedupe by `policyKey` (or by `nodeId` + title when null) |
+| `submitRecommendation({ findingId, policyKey, rationale, tradeoff, limits, priority })` | Attaches Claude's text to the recommendation as `ai: {...}` | `findingId` exists; `policyKey` ∈ `REMEDIATIONS`; strings ≤ 600 chars; never applies anything |
+| `setAgentStatus(agent, { status, detail, mode })` | Updates `snapshot().agents[agent]`; `mode` ∈ ai/rules | `agent` ∈ attacker/searcher/builder |
+
+The initial `actionCatalog()` is exactly the atomic steps already inside the three scenarios:
+
+| id | What it models | gatedBy / requires |
+|---|---|---|
+| `discover` | attacker → gateway discovery | — |
+| `storage-list-anon` | anonymous `list-objects` on storage | gatedBy `storagePrivate` |
+| `storage-read-anon` | anonymous `read-object` on storage | gatedBy `storagePrivate` |
+| `password-guess` | failed password sign-in at `iam` | always denied |
+| `stolen-password-signin` | password sign-in at `iam` | gatedBy `requireMfa`; creates an admin session |
+| `admin-request` | admin request to `app` | requires an admin session from this plan |
+| `token-replay` | stolen low-privilege token at gateway | scenario assumption |
+| `app-flaw-request` | request that invokes the service identity | requires `token-replay` earlier in the plan |
+| `db-admin-export` | `admin-export` on `db` by `app-service` | gatedBy `databaseLeastPrivilege` |
+| `exfil-response` | export data back to attacker | requires a successful `db-admin-export` |
+
+The catalog can grow later, for example with new nodes and policies for the doc's other threat types.
+The agents just read whatever `actionCatalog()` returns.
+
+## 4. Agent HTTP routes (Vaibhav's `router.mjs`; Alex mounts it in `server.mjs`)
+
+Same security rules as Alex's server:
+- JSON only, at most 4 KiB, and an exact field allowlist
+- **no free text from the browser**; only enum values and existing IDs
+
+Claude calls take longer than the server's 10 s timeout, so every route **starts a job and returns 202
+immediately**. Progress and results show up in `GET /api/state`, which the UI already polls.
+
+| Method | Route | Body | Returns |
 |---|---|---|---|
-| **Searcher** | Scans randomized cloud configuration files and flags security risks | Internal (mistakes by people with access) | Vaibhav |
-| **Attacker** | Simulates attacks on a clone of the simulated cloud at varying security levels | External (outsiders forcing their way in) | Vaibhav |
-| **Builder** | Reads both modules' findings, diagnoses weak points, recommends countermeasures to the admin | Both | Vaibhav |
-| **Environment platform** | Generates the simulated cloud and its clones, stores all data, hosts the API app and the dashboard shell with the 3D traffic overview | — | Alex |
+| POST | `/api/agents/attacker/plan` | `{ objective }`, one of `data-exfiltration`, `account-takeover`, `privilege-escalation`, `surprise-me` | 202 `{ jobId }`; 409 if a scenario or plan is active or the attacker is busy |
+| POST | `/api/agents/searcher/sweep` | `{}` | 202 `{ jobId }`; 409 if the searcher is busy |
+| POST | `/api/agents/builder/advise` | `{ findingId }` | 202 `{ jobId }`; 404 for an unknown finding |
+| GET | `/api/agents/status` | — | `{ aiEnabled, model, busy: {attacker, searcher, builder}, lastError, usage: { calls, inputTokens, outputTokens, estCostUsd } }` |
 
-Everything is **simulated**. There is no real cloud account, no real network traffic, and no real exploit code.
+While a job runs, the agent's snapshot status is `{ status: 'Thinking…', mode: 'ai' }`. When it finishes,
+the status changes and the results appear in `findings`, `recommendations` or `activeScenario`.
 
----
+## 5. Claude configuration (all agents go through `src/agents/claude.mjs`)
 
-## 1. Threat taxonomy (from the team's research doc — use these IDs everywhere)
-
-| `category` | Name | Origin | `technique` IDs |
-|---|---|---|---|
-| 1 | Identity & Credential Abuse | E | `leaked_key_abuse`, `password_spray`, `oidc_trust_abuse` |
-| 2 | Infrastructure Misconfigurations | I | `public_bucket`, `overpermissive_iam`, `open_port` |
-| 3 | Supply Chain & Third-Party | E | `vulnerable_integration`, `poisoned_image` |
-| 4 | Cloud-Native Architecture | I | `container_escape`, `serverless_abuse` |
-| 5 | Control Plane & API Hijacking | E | `living_off_the_cloud`, `cryptojacking` |
-
-The Searcher finds the *preconditions* (an internal mistake). The Attacker *exploits* them.
-Example: Searcher flags `overpermissive_iam` on `role-ci`. Attacker escalates through `role-ci`.
-Builder links the two by `resource_id`.
-
----
-
-## 2. Simulated environment (`Environment`)
-
-Produced by `vortex/shared/generator.py::generate_environment(seed: int, level: str) -> Environment`.
-`level` is one of `"hardened" | "default" | "sloppy"`. The same `seed` with a different `level` must
-produce the **same resources** (same IDs and names) with **different security settings**. That is what
-"a clone at varying degrees of security" means.
-
-```jsonc
-{
-  "env_id": "env-42-sloppy",
-  "seed": 42,
-  "security_level": "sloppy",
-  "identities": {
-    "users": [{ "id": "user-ana", "mfa": false, "password_strength": "weak", "reused_password": true,
-                "access_keys": [{ "id": "key-01", "age_days": 400, "exposed_publicly": true }],
-                "role_ids": ["role-dev"] }],
-    "service_accounts": [{ "id": "sa-ci", "role_ids": ["role-ci"] }]
-  },
-  "roles": [{ "id": "role-ci",
-              "policies": [{ "actions": ["*"], "resources": ["*"] }],
-              "trust": { "type": "oidc", "subject": "repo:acme/*" } }],
-  "storage_buckets": [{ "id": "bkt-customers", "public_read": true, "public_write": false,
-                        "encrypted": false, "data_class": "pii" }],
-  "network": { "security_groups": [{ "id": "sg-db",
-                "rules": [{ "port": 5432, "protocol": "tcp", "source_cidr": "0.0.0.0/0" }] }] },
-  "compute": {
-    "instances":  [{ "id": "vm-api", "sg_ids": ["sg-db"], "role_id": "role-dev", "public_ip": true }],
-    "containers": [{ "id": "ctr-web", "image": "webapp", "tag": "latest", "registry": "dockerhub-unverified",
-                     "signed": false, "privileged": true, "host_mounts": ["/var/run/docker.sock"], "role_id": "role-dev" }],
-    "functions":  [{ "id": "fn-resize", "role_id": "role-ci", "max_concurrency": null, "public_trigger": true }]
-  },
-  "integrations": [{ "id": "int-crm", "vendor": "AcmeCRM", "scopes": ["*"], "version_outdated": true }],
-  "controls": { "logging": true, "alerting": false, "rate_limiting": false, "budget_alerts": false,
-                "egress_filtering": false, "image_signing_required": false },
-  "_ground_truth": [{ "technique": "public_bucket", "resource_id": "bkt-customers" }]
-}
-```
-
-Rules:
-- `_ground_truth` lists every weakness the generator injected. Only the scoring code may read it
-  (to measure Searcher precision/recall). **Searcher and Attacker detection logic must never read it.**
-- Approximate weakness odds per resource: hardened about 5%, default about 30%, sloppy about 70%.
-- Deterministic: all randomness comes from `random.Random(seed)`.
-- About 15–30 resources per environment, which is readable in a demo.
-
----
-
-## 3. Finding (the only thing Builder consumes)
-
-```jsonc
-{
-  "id": "f-3c9a",                 // unique
-  "source": "searcher",           // "searcher" | "attacker"
-  "origin": "internal",           // "internal" | "external"
-  "category": 2,                  // 1–5 from the taxonomy
-  "technique": "overpermissive_iam",
-  "resource_id": "role-ci",       // MUST match an ID in the Environment
-  "env_id": "env-42-sloppy",
-  "severity": "critical",         // "critical" | "high" | "medium" | "low"
-  "title": "CI role grants *:* on all resources",
-  "evidence": { "path": "roles[3].policies[0]", "value": { "actions": ["*"], "resources": ["*"] } },
-  "exploited": null,              // Attacker sets true/false; Searcher leaves null
-  "detected": null,               // Attacker: was the step caught by logging/alerting? Searcher: null
-  "attack_run_id": null           // Attacker: which run produced this
-}
-```
-
----
-
-## 4. Repo layout and API
-
-```
-vortex/
-  shared/   schema.py, generator.py, store.py      # Alex: environment platform
-  llm.py    one OpenAI wrapper used by every agent  # Vaibhav
-  searcher/ rules.py, scan.py, router.py, __main__.py              # Vaibhav
-  attacker/ techniques.py, engine.py, planner.py, router.py, __main__.py   # Vaibhav
-  builder/  correlate.py, playbook.py, advisor.py, router.py       # Vaibhav
-  api/      main.py: FastAPI app, environment and findings routes, mounts each agent's router  # Alex
-web/
-  src/App.tsx, layout, 3D traffic overview          # Alex
-  src/panels/SearcherPanel.tsx, AttackerPanel.tsx, BuilderPanel.tsx   # Vaibhav
-data/       JSON output (environments/, findings/, runs/, diagnoses/), no database
-tests/fixtures/env-42-{hardened,default,sloppy}.json   # hand-written, so agents can start before the platform lands
-```
-
-**Platform interface** (Alex implements it in `vortex/shared/`; the agents import only these):
-```python
-generate_environment(seed: int, level: str) -> Environment
-get_environment(env_id: str) -> Environment
-save_environment(env: Environment) -> None            # used by Builder for patched clones
-save_findings(env_id: str, source: str, findings: list[Finding]) -> None
-list_findings(env_id: str) -> list[Finding]
-save_attack_run(run: AttackRun) -> None
-list_attack_runs(env_id: str) -> list[AttackRun]
-```
-`AttackRun` steps carry `target` resource IDs and a step index, so the platform's 3D view can replay an
-attack as traffic between resources.
-
-| Method | Route | Owner | Returns |
-|---|---|---|---|
-| POST | `/api/environments` `{seed, level}` | Platform | `Environment` |
-| GET | `/api/environments/{env_id}` | Platform | `Environment` |
-| POST | `/api/searcher/scan` `{env_id}` | Searcher | `{findings: Finding[], score: {precision, recall}}` |
-| POST | `/api/attacker/campaign` `{seed, levels[], runs_per_level}` **or** `{env_ids[], runs_per_level}` | Attacker | `{runs: AttackRun[], findings: Finding[], summary}` |
-| GET | `/api/findings?env_id=` | Platform | `Finding[]` (all sources) |
-| POST | `/api/builder/diagnose` `{env_id}` | Builder | `Diagnosis` |
-| POST | `/api/builder/apply` `{env_id, fix_ids[]}` | Builder | `ApplyResult` (before/after) |
-
-**Stack:** Python 3.12+, FastAPI, Pydantic v2, pytest. Frontend: React 18 + Vite + TypeScript + TailwindCSS.
-**AI:** OpenAI API through the official `openai` Python SDK (team's OpenAI plan). Read the key from
-`OPENAI_API_KEY` and the model ID from `OPENAI_MODEL` (default `gpt-6-astra`, GPT-6 Astra on Alex's plan);
-never hard-code either. Ship a `.env.example` with `OPENAI_MODEL=gpt-6-astra` and an empty `OPENAI_API_KEY=`. All modules call the model
-through one wrapper, `vortex/llm.py`. Every AI call needs a deterministic fallback so the demo works
-with no API key and survives a refusal or timeout.
+- **SDK:** `@anthropic-ai/sdk` and `zod`. These are the project's only dependencies; add them to `package.json`.
+- **Key:** `new Anthropic()` reads `ANTHROPIC_API_KEY` from the environment. Run with
+  `node --env-file=.env server.mjs`. `.env` is already gitignored; commit a `.env.example` with
+  `ANTHROPIC_API_KEY=` and `VORTEX_MODEL=claude-opus-5-5`. Never log the key or send it to the browser.
+- **Model:** `claude-opus-5-5`, overridable with `VORTEX_MODEL`.
+- **Effort** (`output_config.effort`): Searcher `low`, Attacker `medium`, Builder `medium`.
+- **Thinking is always on** for this model:
+  - don't send `thinking: { type: "disabled" }`, `budget_tokens` or `temperature`
+  - no assistant prefill
+  - no forced `tool_choice`
+- **Structured output:** `client.messages.parse()` with `output_config.format: zodOutputFormat(schema)`.
+  Treat `parsed_output === null` as invalid.
+- **Order of checks:** check `stop_reason === 'refusal'` **before** reading content. Then validate the parsed
+  output against the platform's allowlists. A refusal, error, timeout (45 s), missing key or invalid output
+  means **rules mode**: run the existing deterministic behavior and set `mode: 'rules'` with a short reason.
+- **`max_tokens`:** 8000.
+- **Caching:** put the stable system prompt plus the topology and catalog first, with `cache_control`, so repeated
+  sweeps hit the prompt cache.
+- **Untrusted input:** event `detail` text and anything from the simulation is *data*, never instructions. Wrap it
+  in a clearly labeled JSON block, and tell the model it is untrusted telemetry.
+- **Cost guard:**
+  - track usage from `response.usage`; Opus 5.5 is $4 input / $20 output per million tokens
+  - stop making AI calls (switch to rules mode) after 150 calls or $5 per server session
+  - both limits are overridable in `.env`
+- **Dependency injection:** each agent factory takes `{ simulation, claude }` so tests can pass a fake client.
+  **Tests never call the real API.**
