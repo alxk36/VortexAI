@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVersion = 0;
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
-let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', dialogNode = '';
+let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
 const mode = () => state?.runtime?.mode || 'simulation';
 const serviceNodeIds = new Set(['gateway','lb','app','storage','iam','db']);
@@ -55,6 +55,9 @@ function renderControls() {
   $('environment-mode').value = mode();
   $('edit-node').disabled = !selected || busy;
   document.querySelectorAll('[data-ai]').forEach(button => { button.disabled = busy || Boolean(state?.activeScenario); });
+  const trafficLocked = busy || !state || mode() !== 'simulation' || Boolean(state?.activeScenario);
+  $('traffic-apply').disabled = trafficLocked;
+  $('bots-reveal').disabled = trafficLocked || !state?.traffic?.botsEnabled;
   document.querySelectorAll('[data-scenario]').forEach(button => {
     button.disabled = busy || Boolean(state?.activeScenario);
   });
@@ -105,10 +108,11 @@ function update(next) {
     return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p>${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
-  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${(run.labels||[]).length?`<p class="origin-list">${run.labels.map(l=>`${originTag(l.origin)}<span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>`:''}${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
+  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${(run.suspects||[]).length?`<p class="origin-list"><span class="origin-tag external">Suspects</span>${run.suspects.map(s=>`<span class="evidence">${escape(s)}</span>`).join(' ')}</p>`:''}${(run.labels||[]).length?`<p class="origin-list">${run.labels.map(l=>`${originTag(l.origin)}<span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>`:''}${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   const historyMarkup=attackHistoryMarkup(state.attackHistory);
   if(historyMarkup!==lastHistoryMarkup){$('attack-history').innerHTML=historyMarkup;lastHistoryMarkup=historyMarkup;}
+  renderTraffic();
   renderFindings(); renderEvents(); renderControls(); inspectResource();
 }
 
@@ -138,6 +142,36 @@ function attackHistoryMarkup(history) {
 }
 // End attack history.
 
+// Live traffic: users online, hidden bots, the Searcher's score and the tripwire log.
+const BEHAVIOR_TEXT = {'credential-stuffing':'credential stuffing','storage-scraping':'storage scraping','request-flood':'request flood'};
+function botScoreMarkup(score) {
+  if (!score) return '';
+  const caught = new Set(score.caught || []);
+  const rows = (score.bots || []).map(b => `<li><span class="history-result ${caught.has(b.clientId) ? 'blocked' : 'succeeded'}">${caught.has(b.clientId) ? 'Caught' : 'Missed'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(BEHAVIOR_TEXT[b.behavior] || b.behavior)}</li>`).join('');
+  const alarms = (score.falseAlarms || []).length ? `<li><span class="history-result succeeded">False alarm</span> ${score.falseAlarms.map(id => `<span class="evidence">${escape(id)}</span>`).join(' ')}</li>` : '';
+  const headline = score.searcherRunAt
+    ? `Searcher caught ${caught.size} of ${(score.bots || []).length} hidden bot${(score.bots || []).length === 1 ? '' : 's'}${(score.falseAlarms || []).length ? `, ${score.falseAlarms.length} false alarm${score.falseAlarms.length === 1 ? '' : 's'}` : ''}${score.searcherMode === 'model' ? ' (AI)' : ' (rule fallback)'}.`
+    : 'Run the Searcher before revealing to get a score.';
+  return `<div class="attack-history"><h3>${escape(headline)}</h3><ol>${rows}${alarms}</ol></div>`;
+}
+function autoBlocksMarkup(traffic) {
+  const active = new Set((traffic?.blocked || []).map(b => b.clientId));
+  const rows = (traffic?.autoBlocks || []).slice(0, 4).map(b => `<li><span class="history-result ${active.has(b.clientId) ? 'succeeded' : 'blocked'}">${active.has(b.clientId) ? 'Blocked' : 'Lifted'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(b.reason)}${active.has(b.clientId) ? ` <button class="compact quiet" data-unblock="${escape(b.clientId)}">Unblock</button>` : ''}</li>`).join('');
+  return rows ? `<div class="attack-history"><h3>Searcher tripwire</h3><ol>${rows}</ol></div>` : '';
+}
+// End live traffic.
+function renderTraffic() {
+  const traffic = state.traffic;
+  if (!traffic) return;
+  const config = `${traffic.users}:${traffic.botsEnabled}`;
+  if (config !== lastTrafficConfig) { $('traffic-users').value = traffic.users; $('traffic-bots').checked = traffic.botsEnabled; lastTrafficConfig = config; }
+  const status = mode() !== 'simulation' ? 'Users and hidden bots run in the in-memory simulation.'
+    : `${traffic.users} user${traffic.users === 1 ? '' : 's'} online · ${traffic.botsEnabled ? (traffic.revealed ? `${traffic.revealed.bots.length} bot${traffic.revealed.bots.length === 1 ? '' : 's'} revealed` : 'bots hidden among them') : 'no bots'} · ${traffic.clients.length} active client${traffic.clients.length === 1 ? '' : 's'}`;
+  const markup = `${botScoreMarkup(state.botScore)}${autoBlocksMarkup(traffic)}`;
+  $('traffic-status').textContent = status;
+  if (markup !== lastTrafficMarkup) { const [score, blocks] = [botScoreMarkup(state.botScore), autoBlocksMarkup(traffic)]; $('bot-score').innerHTML = score; $('auto-blocks').innerHTML = blocks; lastTrafficMarkup = markup; }
+}
+
 function renderFindings() {
   $('finding-count').textContent = state.findings.length;
   const markup = state.findings.map(f => {
@@ -164,7 +198,16 @@ function inspectResource() {
   $('resource-detail').textContent = `${node.description} ${count ? `${count} open finding${count===1?'':'s'}.` : 'No open findings for this resource.'} ${canEditControls(node.id)?`Status: ${node.status || 'active'} · Action: ${node.action || 'normal'}.`:''}`;
 }
 $('pause').addEventListener('click',()=>command('running',{running:!state.running}, state.running?'Traffic generation paused.':'Traffic generation resumed.'));
-$('reset').addEventListener('click',()=>command('reset',{},'Lab reset. All policies, findings, and counters returned to the vulnerable baseline.'));
+$('reset').addEventListener('click',()=>command('reset',{},'Lab reset and paused. All policies, findings, and counters returned to the vulnerable baseline. Press Resume to start traffic.'));
+$('traffic-apply').addEventListener('click',()=>{
+  const users=Number($('traffic-users').value), bots=$('traffic-bots').checked;
+  command('traffic',{users,bots},`Traffic set: ${users} user${users===1?'':'s'} online${bots?', with hidden bots among them. Run the Searcher, then reveal.':'.'}`);
+});
+$('bots-reveal').addEventListener('click',()=>command('bots/reveal',{},'Hidden bots revealed. The score compares them with the newest Searcher run.'));
+$('auto-blocks').addEventListener('click',event=>{
+  const button=event.target.closest('[data-unblock]');
+  if(button) command('unblock',{clientId:button.dataset.unblock},`Admin lifted the tripwire block on ${button.dataset.unblock}.`);
+});
 $('scenarios').addEventListener('click',event=>{
   const button = event.target.closest('[data-scenario]');
   if (button) command('scenario',{id:button.dataset.scenario}, state.running?'Scenario requested. Review its observed events and findings.':'Scenario queued. Resume traffic to run it.');

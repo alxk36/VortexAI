@@ -48,11 +48,13 @@ const REMEDIATIONS = {
   },
 };
 
+import { TrafficModel } from './traffic.mjs';
+
 const clone = (value) => structuredClone(value);
 const timeAt = (tick) => new Date(tick * 1000).toISOString().slice(11, 19);
 
 export class Simulation {
-  constructor() { this.reset(); }
+  constructor({ random = Math.random } = {}) { this._traffic = new TrafficModel({ random }); this.reset(); }
 
   /** Reset is a new lab run: controls, findings, counters, and queues are cleared. */
   reset() {
@@ -72,6 +74,7 @@ export class Simulation {
       searcher: { status: 'Monitoring', detail: 'Observing identity, data access, and application events.' },
       builder: { status: 'Waiting', detail: 'Recommendations appear when observed evidence identifies a weak control.' },
     };
+    this._traffic.reset();
     return this.snapshot();
   }
 
@@ -93,6 +96,7 @@ export class Simulation {
       } : null,
       metrics: { ...this._metrics, openFindings: this._findings.filter(f => f.status === 'open').length },
       agents: this._agents,
+      traffic: this._traffic.view(this._tick),
     });
   }
 
@@ -116,6 +120,7 @@ export class Simulation {
     if (!this.running) return this.snapshot();
     this._tick += 1;
     this._normalTraffic();
+    this._traffic.tick(this);
     if (this._active) {
       const current = this._active;
       const action = current.steps[current.index];
@@ -168,6 +173,24 @@ export class Simulation {
     return this.snapshot();
   }
 
+  /** Users online and hidden bots (simulator only). Changing them starts a new population. */
+  setTraffic({ users, bots } = {}) {
+    if (this._active) throw new Error('Wait for the scenario to finish before changing traffic.');
+    this._traffic.configure({ users, bots });
+    return this.snapshot();
+  }
+
+  /** Show which clients were hidden bots. Until this call no snapshot names them. */
+  revealBots() { return this._traffic.reveal(this._tick); }
+
+  /** Admin override for the Searcher's flood tripwire. */
+  unblockClient(clientId) {
+    if (typeof clientId !== 'string') throw new Error('A client address is required.');
+    this._traffic.unblock(clientId);
+    this._agents.searcher = { status: 'Monitoring', detail: `Admin lifted the tripwire block on ${clientId}.` };
+    return this.snapshot();
+  }
+
   _normalTraffic() {
     // Stop at an unavailable resource: downstream work must not appear to succeed.
     const dataNodeForGate = this._tick % 2 ? 'db' : 'storage';
@@ -177,8 +200,18 @@ export class Simulation {
       for (let i=1;i<=Math.max(1,blocked);i++) this._emit({source:path[i-1],target:path[i],kind:i>=blocked?'blocked':'normal',outcome:i>=blocked?'denied':'allowed',protocol:'HTTPS',action:'request',bytes:128,detail:i>=blocked?'The simulator node is paused or quarantined. No downstream request is generated.':'Request advances toward the next available resource.'});
       return;
     }
+    // More users online means more request chains per tick, each from one user's address.
+    for (let chain = 0; chain < this._traffic.chainsPerTick(); chain++) this._userChain(this._traffic.pickUser());
+  }
+
+  _userChain(clientId) {
     const base = { kind: 'normal', outcome: 'allowed', authenticated: true, principal: 'application-user' };
-    this._emit({ ...base, source: 'client', target: 'gateway', protocol: 'HTTPS', action: 'request', bytes: 820, detail: 'Authenticated user requests the application.' });
+    if (this._traffic.users > 1 && this._traffic.random() < 0.08) {
+      // Ordinary users sign in now and then, and occasionally mistype a password.
+      const typo = this._traffic.random() < 0.15;
+      this._emit({ ...base, clientId, source: 'client', target: 'iam', protocol: 'HTTPS', action: 'sign-in', principal: this._traffic.accountFor(clientId), authentication: 'password+mfa', outcome: typo ? 'denied' : 'allowed', authenticated: !typo, kind: typo ? 'blocked' : 'normal', bytes: 300, detail: typo ? 'A user mistyped their password.' : 'A user signed in with a second factor.' });
+    }
+    this._emit({ ...base, clientId, source: 'client', target: 'gateway', protocol: 'HTTPS', action: 'request', bytes: 820, detail: 'Authenticated user requests the application.' });
     this._emit({ ...base, source: 'gateway', target: 'lb', protocol: 'HTTPS', action: 'route', bytes: 820, detail: 'Gateway forwards the accepted request.' });
     this._emit({ ...base, source: 'lb', target: 'app', protocol: 'HTTPS', action: 'request', bytes: 820, detail: 'Load balancer selects the application service.' });
     const dataNode = this._tick % 2 ? 'db' : 'storage';
@@ -186,7 +219,7 @@ export class Simulation {
     this._emit({ ...base, source: dataNode, target: 'app', protocol: dataNode === 'db' ? 'SQL/TLS' : 'HTTPS', action: 'response', bytes: 4600, principal: 'app-service', detail: 'The data service returns a synthetic application response.' });
     this._emit({ ...base, source: 'app', target: 'lb', protocol: 'HTTPS', action: 'response', bytes: 5200, detail: 'The application returns the completed synthetic response to the load balancer.' });
     this._emit({ ...base, source: 'lb', target: 'gateway', protocol: 'HTTPS', action: 'response', bytes: 5200, detail: 'The load balancer forwards the response through the public gateway.' });
-    this._emit({ ...base, source: 'gateway', target: 'client', protocol: 'HTTPS', action: 'response', bytes: 5200, detail: 'The gateway returns the response to the legitimate user, completing the round trip.' });
+    this._emit({ ...base, clientId, source: 'gateway', target: 'client', protocol: 'HTTPS', action: 'response', bytes: 5200, detail: 'The gateway returns the response to the legitimate user, completing the round trip.' });
     this._emit({ ...base, source: 'app', target: 'logs', protocol: 'AUDIT', action: 'audit', bytes: 180, principal: 'app-service', detail: 'Structured telemetry records the request outcome.' });
   }
 
@@ -238,6 +271,7 @@ export class Simulation {
     // The detector gets observation fields only, not the simulator's attack label.
     const { kind: _label, ...observation } = event;
     this._observe(observation);
+    if (event.clientId) this._traffic.observe(event, this);
   }
 
   _observe(event) {

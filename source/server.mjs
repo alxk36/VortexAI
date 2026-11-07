@@ -114,7 +114,7 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
         if (request.method !== 'GET') throw fail('Use GET for this endpoint.', 405);
         return sendJson(response, 200, await simulation.snapshot());
       }
-      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run']);
+      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run', '/api/traffic', '/api/bots/reveal', '/api/unblock']);
       if (mutations.has(path)) {
         if (request.method !== 'POST') throw fail('Use POST for this endpoint.', 405);
         const body = await readJson(request);
@@ -138,6 +138,20 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
           validateFields(body,['mode']);
           if (!simulation.setMode) throw fail('Runtime mode switching is unavailable.');
           await simulation.setMode(body.mode);
+        }
+        if (path === '/api/traffic') {
+          validateFields(body, ['users', 'bots']);
+          if (!Number.isInteger(body.users) || typeof body.bots !== 'boolean') throw fail('users must be a whole number and bots true or false.');
+          await simulation.setTraffic({ users: body.users, bots: body.bots });
+        }
+        if (path === '/api/bots/reveal') {
+          validateFields(body, []);
+          await simulation.revealBots();
+        }
+        if (path === '/api/unblock') {
+          validateFields(body, ['clientId']);
+          if (typeof body.clientId !== 'string' || body.clientId.length > 40) throw fail('A client address is required.');
+          await simulation.unblockClient(body.clientId);
         }
         if (path === '/api/ai/run') {
           validateFields(body,['agent']);

@@ -11,7 +11,7 @@ const context = {
   attackHistory: [{ scenarioId: 'exposed-storage', result: 'blocked' }],
   events: [], findings: [], recommendations: [],
 };
-const choice = { summary: 'Storage was fixed; try credentials.', scenarioId: 'credential-abuse', evidenceIds: [], recommendationIds: [], labels: [] };
+const choice = { summary: 'Storage was fixed; try credentials.', scenarioId: 'credential-abuse', evidenceIds: [], recommendationIds: [], labels: [], suspects: [] };
 const text = value => ({ type: 'text', text: JSON.stringify(value) });
 const switched = { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' } };
 const fallbackReply = (content = [switched, text(choice)]) => Response.json({

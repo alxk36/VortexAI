@@ -34,7 +34,7 @@ export class Runtime {
     this.executorToken = executorToken; this.agentToken = agentToken;
     this.mode = 'simulation'; this.real = new Simulation(); this.generation = null;
     this.seen = new Set(); this.realState = null; this.runs = []; this.busy = false; this.syncPromise = null;
-    this.attackHistory = []; this.pendingAttack = null;
+    this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
     this.detail = container ? 'Select real services after lab:verify passes.' : 'Start Docker with npm run lab:up to connect real services.';
     this.aiDetail = container ? 'Claude Opus 5.5 connection is checked on each run. Add ANTHROPIC_API_KEY in .env; missing access is labeled fallback.' : 'Agent containers are offline. Explicit rule fallback is available. Add your Anthropic key to .env for the Docker lab.';
   }
@@ -43,7 +43,8 @@ export class Runtime {
    * Attacker later sees only the scenario and result, so it can adapt to fixes.
    */
   recordAttack(scenarioId, source, events, sinceTick) {
-    const blockedBy = [...new Set(events.filter(e => e.tick > sinceTick && e.outcome === 'denied' && e.control).map(e => e.control))];
+    // Background user and bot traffic carries a clientId; only scenario events count here.
+    const blockedBy = [...new Set(events.filter(e => e.tick > sinceTick && !e.clientId && e.outcome === 'denied' && e.control).map(e => e.control))];
     const name = this.simulation.snapshot().scenarios.find(s => s.id === scenarioId)?.name ?? scenarioId;
     this.attackHistory.unshift({ scenarioId, name, source, result: blockedBy.length ? 'blocked' : 'succeeded', blockedBy, time: new Date().toISOString() });
     this.attackHistory = this.attackHistory.slice(0, 12);
@@ -115,6 +116,7 @@ export class Runtime {
     result.runtime = {mode:this.mode,available:this.container,detail:this.detail,containmentVerified:!!this.realState?.containmentVerified};
     result.ai = {available:this.container,detail:this.aiDetail,runs:structuredClone(this.runs)};
     result.attackHistory = structuredClone(this.attackHistory);
+    result.botScore = structuredClone(this.botScore);
     return result;
   }
   async tick() {
@@ -151,7 +153,7 @@ export class Runtime {
       } else if (this.mode === 'lab') {
         this.ingest(await this.executor('/running',{running:false}));
       }
-      this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null;
+      this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
     });
   }
   async runScenario(id) {
@@ -180,9 +182,10 @@ export class Runtime {
   }
   async reset() {
     return this.locked(async()=>{
-      if (this.mode==='simulation') this.simulation.reset();
-      else this.ingest(await this.executor('/reset',{}));
-      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null;
+      // Reset lab leaves the environment paused so the admin starts traffic deliberately.
+      if (this.mode==='simulation') { this.simulation.reset(); this.simulation.setRunning(false); }
+      else { this.ingest(await this.executor('/reset',{})); this.ingest(await this.executor('/running',{running:false})); }
+      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null;
     });
   }
   async updateNode(id, status, action) {
@@ -195,6 +198,32 @@ export class Runtime {
       }
     });
   }
+  /** Users online and hidden bots exist only in the in-memory simulator. */
+  simulatorOnly() { if (this.mode !== 'simulation') throw new Error('Users and hidden bots are available in the simulator. Switch to In-memory simulation.'); }
+  async setTraffic({ users, bots } = {}) {
+    this.simulatorOnly();
+    return this.locked(async()=>{ this.simulation.setTraffic({ users, bots }); this.botScore = null; });
+  }
+  /** Reveal the hidden bots and score the newest Searcher run against them. */
+  async revealBots() {
+    this.simulatorOnly();
+    return this.locked(async()=>{
+      const { bots } = this.simulation.revealBots();
+      const run = this.runs.find(r => r.agent === 'searcher');
+      const suspects = new Set(run?.suspects ?? []);
+      const botIds = new Set(bots.map(b => b.clientId));
+      this.botScore = {
+        bots, searcherRunAt: run?.time ?? null, searcherMode: run?.mode ?? null,
+        caught: bots.filter(b => suspects.has(b.clientId)).map(b => b.clientId),
+        missed: bots.filter(b => !suspects.has(b.clientId)).map(b => b.clientId),
+        falseAlarms: [...suspects].filter(id => !botIds.has(id)),
+      };
+    });
+  }
+  async unblockClient(clientId) {
+    this.simulatorOnly();
+    return this.locked(async()=>{ this.simulation.unblockClient(clientId); });
+  }
   async runAI(agent) {
     if (!ROLES.includes(agent)) throw new Error('Unknown agent.');
     return this.locked(async()=>{
@@ -206,7 +235,7 @@ export class Runtime {
         try {
           const remote=await internalJson(`http://${agent}:8080/run`,this.agentToken,{context},this.fetch);
           if(remote.agent!==agent || !['model','fallback'].includes(remote.mode) || remote.provider!=='anthropic' || remote.model!==DEFAULT_MODEL) throw new Error('Invalid agent metadata.');
-          const decision=validateDecision(agent,{summary:remote.summary,scenarioId:remote.scenarioId,evidenceIds:remote.evidenceIds,recommendationIds:remote.recommendationIds,labels:remote.labels},context);
+          const decision=validateDecision(agent,{summary:remote.summary,scenarioId:remote.scenarioId,evidenceIds:remote.evidenceIds,recommendationIds:remote.recommendationIds,labels:remote.labels,suspects:remote.suspects},context);
           const servedBy=remote.mode==='model'?servedModel(remote.servedBy):undefined;
           result={agent,mode:remote.mode,model:DEFAULT_MODEL,provider:'anthropic',...decision,...(servedBy?{servedBy}:{}),...(remote.mode==='fallback'?{reason:'Broker used deterministic fallback; no model decision was available.'}:{})};
         }
