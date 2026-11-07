@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVersion = 0;
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
-let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', dialogNode = '';
+let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
 const mode = () => state?.runtime?.mode || 'simulation';
 const serviceNodeIds = new Set(['gateway','lb','app','storage','iam','db']);
@@ -107,6 +107,8 @@ function update(next) {
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
   const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${(run.labels||[]).length?`<p class="origin-list">${run.labels.map(l=>`${originTag(l.origin)}<span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>`:''}${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
+  const historyMarkup=attackHistoryMarkup(state.attackHistory);
+  if(historyMarkup!==lastHistoryMarkup){$('attack-history').innerHTML=historyMarkup;lastHistoryMarkup=historyMarkup;}
   renderFindings(); renderEvents(); renderControls(); inspectResource();
 }
 
@@ -121,6 +123,20 @@ function originFor(ids) {
   }
   return null;
 }
+
+// Attack history: how each finished run turned out, newest first, so the
+// dashboard shows the Attacker switching paths once a fix blocks one.
+const CONTROL_TEXT = {storagePrivate:'private storage', requireMfa:'MFA', databaseLeastPrivilege:'least-privilege database role'};
+function attackHistoryMarkup(history) {
+  if (!Array.isArray(history) || !history.length) return '';
+  const rows = history.slice(0, 6).map(h => {
+    const blocked = h.result === 'blocked';
+    const by = blocked && Array.isArray(h.blockedBy) && h.blockedBy.length ? ` by ${h.blockedBy.map(c => CONTROL_TEXT[c] || c).join(', ')}` : '';
+    return `<li><span class="history-result ${blocked ? 'blocked' : 'succeeded'}">${blocked ? 'Blocked' : 'Got through'}</span> <strong>${escape(h.name || h.scenarioId)}</strong>${escape(by)} <span class="muted">· ${h.source === 'ai' ? 'AI attacker' : 'admin'}</span></li>`;
+  }).join('');
+  return `<div class="attack-history"><h3>Attack history</h3><ol>${rows}</ol></div>`;
+}
+// End attack history.
 
 function renderFindings() {
   $('finding-count').textContent = state.findings.length;
