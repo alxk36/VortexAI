@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runAgent, DEFAULT_MODEL, assertRole } from './agents.mjs';
+import { runAgent, DEFAULT_MODEL, assertRole, servedModel } from './agents.mjs';
 import { inferClaude } from './anthropic.mjs';
 import { authorized, send, readBody } from './http.mjs';
 
@@ -17,11 +17,13 @@ export function createBroker({ token = process.env.AGENT_BROKER_TOKEN, apiKey = 
     try {
       const body = await readBody(request, ['agent', 'context']);
       assertRole(body.agent);
+      let servedBy;
       const result = await runAgent(body.agent, body.context, {
         model,
-        infer: apiKey ? (agent, context) => infer(agent, context, { apiKey, model }) : undefined,
+        infer: apiKey ? (agent, context) => infer(agent, context, { apiKey, model, onModel: m => { servedBy = m; } }) : undefined,
       });
       if (!apiKey) result.reason = 'Anthropic API key is not configured; deterministic fallback used.';
+      if (result.mode === 'model' && servedModel(servedBy)) result.servedBy = servedBy;
       send(response, 200, result);
     } catch { send(response, 400, { error: 'Invalid agent request.' }); }
     finally { busy = false; }

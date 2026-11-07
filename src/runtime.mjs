@@ -1,5 +1,5 @@
 import { Simulation } from './simulation.mjs';
-import { prepareContext, runAgent, validateDecision, DEFAULT_MODEL } from '../ai/agents.mjs';
+import { prepareContext, runAgent, validateDecision, servedModel, DEFAULT_MODEL } from '../ai/agents.mjs';
 
 const ROLES = ['attacker', 'searcher', 'builder'];
 // These addresses are deployment wiring, never input accepted from a browser or model.
@@ -34,8 +34,41 @@ export class Runtime {
     this.executorToken = executorToken; this.agentToken = agentToken;
     this.mode = 'simulation'; this.real = new Simulation(); this.generation = null;
     this.seen = new Set(); this.realState = null; this.runs = []; this.busy = false; this.syncPromise = null;
+    this.attackHistory = []; this.pendingAttack = null;
     this.detail = container ? 'Select real services after lab:verify passes.' : 'Start Docker with npm run lab:up to connect real services.';
     this.aiDetail = container ? 'Claude Opus 5.5 connection is checked on each run. Add ANTHROPIC_API_KEY in .env; missing access is labeled fallback.' : 'Agent containers are offline. Explicit rule fallback is available. Add your Anthropic key to .env for the Docker lab.';
+  }
+  /** Record how a finished attack run turned out, judged only from observed
+   * events: a run is blocked when a denied observation names a control. The
+   * Attacker later sees only the scenario and result, so it can adapt to fixes.
+   */
+  recordAttack(scenarioId, source, events, sinceTick) {
+    const blockedBy = [...new Set(events.filter(e => e.tick > sinceTick && e.outcome === 'denied' && e.control).map(e => e.control))];
+    const name = this.simulation.snapshot().scenarios.find(s => s.id === scenarioId)?.name ?? scenarioId;
+    this.attackHistory.unshift({ scenarioId, name, source, result: blockedBy.length ? 'blocked' : 'succeeded', blockedBy, time: new Date().toISOString() });
+    this.attackHistory = this.attackHistory.slice(0, 12);
+  }
+  /** Simulator runs advance one step per tick; settle once the run has finished. */
+  settleAttack() {
+    if (!this.pendingAttack) return;
+    const state = this.simulation.snapshot();
+    if (state.activeScenario) return;
+    const { scenarioId, source, startTick } = this.pendingAttack;
+    this.pendingAttack = null;
+    this.recordAttack(scenarioId, source, state.events, startTick);
+  }
+  /** Start a scenario in the current mode and track its outcome. */
+  async launch(id, source) {
+    if (this.mode === 'simulation') {
+      const startTick = this.simulation.snapshot().tick;
+      this.simulation.runScenario(id);
+      this.pendingAttack = { scenarioId: id, source, startTick };
+    } else {
+      // The lab executor runs the whole chain in one call.
+      const startTick = this.realState?.tick ?? 0;
+      this.ingest(await this.executor('/scenario', {id}));
+      this.recordAttack(id, source, this.realState.events, startTick);
+    }
   }
   async executor(path, body) {
     if (!this.container || !this.executorToken) throw new Error('Real services require the verified Docker lab. Run npm run lab:up.');
@@ -81,13 +114,14 @@ export class Runtime {
     }
     result.runtime = {mode:this.mode,available:this.container,detail:this.detail,containmentVerified:!!this.realState?.containmentVerified};
     result.ai = {available:this.container,detail:this.aiDetail,runs:structuredClone(this.runs)};
+    result.attackHistory = structuredClone(this.attackHistory);
     return result;
   }
   async tick() {
     // Do not start a new read while an operation owns the state. A read already
     // underway is awaited by locked(), so it cannot overwrite a newer mutation.
     if (this.busy) return;
-    if (this.mode === 'simulation') this.simulation.tick();
+    if (this.mode === 'simulation') { this.simulation.tick(); this.settleAttack(); }
     else {
       try { await this.sync(); }
       catch { this.detail = 'Lab telemetry disconnected. Last observed state retained; no synthetic replacement.'; }
@@ -117,14 +151,11 @@ export class Runtime {
       } else if (this.mode === 'lab') {
         this.ingest(await this.executor('/running',{running:false}));
       }
-      this.mode = mode; this.runs = [];
+      this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null;
     });
   }
   async runScenario(id) {
-    return this.locked(async()=>{
-      if (this.mode === 'simulation') this.simulation.runScenario(id);
-      else this.ingest(await this.executor('/scenario',{id}));
-    });
+    return this.locked(async()=>{ await this.launch(id, 'admin'); });
   }
   async applyRecommendation(id) {
     return this.locked(async()=>{
@@ -151,7 +182,7 @@ export class Runtime {
     return this.locked(async()=>{
       if (this.mode==='simulation') this.simulation.reset();
       else this.ingest(await this.executor('/reset',{}));
-      this.runs=[];
+      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null;
     });
   }
   async updateNode(id, status, action) {
@@ -176,18 +207,20 @@ export class Runtime {
           const remote=await internalJson(`http://${agent}:8080/run`,this.agentToken,{context},this.fetch);
           if(remote.agent!==agent || !['model','fallback'].includes(remote.mode) || remote.provider!=='anthropic' || remote.model!==DEFAULT_MODEL) throw new Error('Invalid agent metadata.');
           const decision=validateDecision(agent,{summary:remote.summary,scenarioId:remote.scenarioId,evidenceIds:remote.evidenceIds,recommendationIds:remote.recommendationIds},context);
-          result={agent,mode:remote.mode,model:DEFAULT_MODEL,provider:'anthropic',...decision,...(remote.mode==='fallback'?{reason:'Broker used deterministic fallback; no model decision was available.'}:{})};
+          const servedBy=remote.mode==='model'?servedModel(remote.servedBy):undefined;
+          result={agent,mode:remote.mode,model:DEFAULT_MODEL,provider:'anthropic',...decision,...(servedBy?{servedBy}:{}),...(remote.mode==='fallback'?{reason:'Broker used deterministic fallback; no model decision was available.'}:{})};
         }
         catch { result=await runAgent(agent,context); result.reason='Agent service unavailable; deterministic fallback used.'; }
       } else result=await runAgent(agent,context);
       this.runs.unshift({...result,time:new Date().toISOString()});this.runs=this.runs.slice(0,12);
-      this.aiDetail = result.mode==='model' ? `${result.model}: ${agent} completed a validated response.` : `${agent}: fallback used. ${result.reason || 'Configure the Anthropic key and start the agent containers.'}`;
+      this.aiDetail = result.mode!=='model' ? `${agent}: fallback used. ${result.reason || 'Configure the Anthropic key and start the agent containers.'}`
+        : result.servedBy && result.servedBy!==result.model ? `${result.servedBy}: ${agent} completed a validated response after ${result.model} declined (Anthropic server-side fallback).`
+        : `${result.model}: ${agent} completed a validated response.`;
       // Only the allowlisted scenario choice is executable. Searcher/Builder stay read-only.
       if (agent==='attacker' && result.scenarioId) {
         const catalog=this.simulation.snapshot().scenarios;
         if (!catalog.some(s=>s.id===result.scenarioId)) throw new Error('Agent selected an unsupported scenario.');
-        if (this.mode==='simulation') this.simulation.runScenario(result.scenarioId);
-        else this.ingest(await this.executor('/scenario',{id:result.scenarioId}));
+        await this.launch(result.scenarioId, 'ai');
       }
     });
   }

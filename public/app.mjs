@@ -105,7 +105,7 @@ function update(next) {
     return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p>${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
-  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.model)}</small>`:''}</article>`).join('');
+  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   renderFindings(); renderEvents(); renderControls(); inspectResource();
 }

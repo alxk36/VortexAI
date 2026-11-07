@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AGENT_ROLES, DEFAULT_MODEL, assertRole, prepareContext, runAgent, validateDecision } from './agents.mjs';
+import { AGENT_ROLES, DEFAULT_MODEL, assertRole, prepareContext, runAgent, servedModel, validateDecision } from './agents.mjs';
 import { readBoundedJson } from './anthropic.mjs';
 import { authorized, send, readBody } from './http.mjs';
 
@@ -26,7 +26,9 @@ export async function callBroker(agent, input, { token = process.env.AGENT_BROKE
       summary: result.summary, scenarioId: result.scenarioId,
       evidenceIds: result.evidenceIds, recommendationIds: result.recommendationIds,
     }, context);
+    const servedBy = result.mode === 'model' ? servedModel(result.servedBy) : undefined;
     return { agent, mode: result.mode, provider: 'anthropic', model: DEFAULT_MODEL, ...decision,
+      ...(servedBy ? { servedBy } : {}),
       ...(result.mode === 'fallback' ? { reason: 'Broker returned deterministic fallback; no model decision was used.' } : {}) };
   } catch {
     const result = await runAgent(agent, context);
