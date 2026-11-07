@@ -14,7 +14,7 @@ function afterScenario(id) {
   while (sim.snapshot().activeScenario) sim.tick();
   return sim.snapshot();
 }
-const base = { summary: 'ok', scenarioId: null, evidenceIds: [], recommendationIds: [], labels: [], suspects: [] };
+const base = { summary: 'ok', scenarioId: null, evidenceIds: [], recommendationIds: [], labels: [], suspects: [], plan: [] };
 
 test('the decision schema requires labels with an internal/external origin', () => {
   assert.ok(DECISION_SCHEMA.required.includes('labels'));

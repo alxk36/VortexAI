@@ -50,6 +50,42 @@ const REMEDIATIONS = {
 
 import { TrafficModel } from './traffic.mjs';
 
+// Allowlisted attack steps. The scripted scenarios are fixed lists of these,
+// and the AI Attacker may compose its own chains from the same list. A step
+// only changes in-memory state; `requires` names a step that must come earlier.
+// Descriptions say what a step attempts, never which control would stop it.
+const ATTACK_ACTIONS = Object.freeze([
+  { id: 'discover', description: 'Probe the public gateway to find exposed resources.', requires: [], nodes: ['attacker', 'gateway'] },
+  { id: 'storage-list', description: 'List objects in object storage without signing in.', requires: [], nodes: ['attacker', 'storage'] },
+  { id: 'storage-read', description: 'Read an object from object storage without signing in.', requires: [], nodes: ['attacker', 'storage'] },
+  { id: 'password-guess', description: 'Try a wrong password against the lab administrator account.', requires: [], nodes: ['attacker', 'iam'] },
+  { id: 'stolen-password-signin', description: 'Sign in as the lab administrator with a stolen password.', requires: [], nodes: ['attacker', 'iam'] },
+  { id: 'admin-request', description: 'Use that administrator session to call an admin function in the application.', requires: ['stolen-password-signin'], nodes: ['app'] },
+  { id: 'token-replay', description: 'Replay a stolen low-privilege application token at the gateway.', requires: [], nodes: ['attacker', 'gateway'] },
+  { id: 'app-flaw-request', description: 'Abuse an application flaw so the request runs as the app service identity.', requires: ['token-replay'], nodes: ['gateway', 'app'] },
+  { id: 'db-admin-export', description: 'Use the service identity to run an administrative database export.', requires: ['app-flaw-request'], nodes: ['app', 'db'] },
+  { id: 'exfiltrate', description: 'Send the exported data out to the attacker.', requires: ['db-admin-export'], nodes: ['db'] },
+]);
+const ACTION_BY_ID = Object.fromEntries(ATTACK_ACTIONS.map(a => [a.id, a]));
+const SCENARIO_ACTIONS = Object.freeze({
+  'exposed-storage': ['discover', 'storage-list', 'storage-read'],
+  'credential-abuse': ['password-guess', 'password-guess', 'password-guess', 'stolen-password-signin', 'admin-request'],
+  'lateral-movement': ['token-replay', 'app-flaw-request', 'db-admin-export', 'exfiltrate'],
+});
+const MAX_PLAN_STEPS = 8;
+
+/** Why a composed chain is not allowed, or null when it is. */
+export function planProblem(actions) {
+  if (!Array.isArray(actions) || actions.length < 1 || actions.length > MAX_PLAN_STEPS) return `A plan needs 1 to ${MAX_PLAN_STEPS} steps.`;
+  for (const [index, actionId] of actions.entries()) {
+    const action = typeof actionId === 'string' ? ACTION_BY_ID[actionId] : undefined;
+    if (!action) return 'The plan contains an unknown attack action.';
+    const missing = action.requires.find(req => !actions.slice(0, index).includes(req));
+    if (missing) return `${actionId} requires ${missing} earlier in the plan.`;
+  }
+  return null;
+}
+
 const clone = (value) => structuredClone(value);
 const timeAt = (tick) => new Date(tick * 1000).toISOString().slice(11, 19);
 
@@ -90,9 +126,11 @@ export class Simulation {
       recommendations: this._recommendations,
       policies: this._policies,
       scenarios: SCENARIOS,
+      attackActions: ATTACK_ACTIONS.map(({ id, description, requires }) => ({ id, description, requires: [...requires] })),
       activeScenario: this._active ? {
         id: this._active.id, name: this._active.name,
         step: this._active.index, total: this._active.steps.length,
+        ...(this._active.plan ? { plan: [...this._active.plan] } : {}),
       } : null,
       metrics: { ...this._metrics, openFindings: this._findings.filter(f => f.status === 'open').length },
       agents: this._agents,
@@ -150,6 +188,22 @@ export class Simulation {
     this._active = { id, name: scenario.name, index: 0, context: { blocked: false }, steps: this._scenarioSteps(id) };
     this._metrics.attackAttempts += 1;
     this._agents.attacker = { status: this.running ? 'Simulating' : 'Queued', detail: `${scenario.name}: ${scenario.steps} synthetic steps queued.` };
+    return this.snapshot();
+  }
+
+  /** Run a composed chain of allowlisted steps (the AI Attacker's own attack). */
+  runPlan({ actions, name = '' } = {}) {
+    if (this._active) throw new Error('A scenario is already running. Finish it or reset the lab first.');
+    const problem = planProblem(actions);
+    if (problem) throw new Error(problem);
+    const nodes = new Set(actions.flatMap(actionId => ACTION_BY_ID[actionId].nodes));
+    if ([...nodes].some(node => this._nodeSettings[node].status === 'paused' || this._nodeSettings[node].action === 'quarantine')) {
+      throw new Error('Restore the plan resources to active, non-quarantined status before running it.');
+    }
+    const label = typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : `Custom chain: ${actions.join(' → ')}`;
+    this._active = { id: 'custom', name: label, index: 0, context: { blocked: false }, steps: actions.map(a => this._attackStep(a)), plan: [...actions] };
+    this._metrics.attackAttempts += 1;
+    this._agents.attacker = { status: this.running ? 'Simulating' : 'Queued', detail: `${label}: ${actions.length} synthetic steps queued.` };
     return this.snapshot();
   }
 
@@ -223,41 +277,55 @@ export class Simulation {
     this._emit({ ...base, source: 'app', target: 'logs', protocol: 'AUDIT', action: 'audit', bytes: 180, principal: 'app-service', detail: 'Structured telemetry records the request outcome.' });
   }
 
-  _scenarioSteps(id) {
+  /** Scripted scenarios are fixed lists of the same steps the AI Attacker may compose. */
+  _scenarioSteps(id) { return SCENARIO_ACTIONS[id].map(action => this._attackStep(action)); }
+
+  /** One allowlisted attack step: it only changes in-memory state and emits events. */
+  _attackStep(actionId) {
     const attack = (fields) => this._emit({ kind: 'attack', authenticated: false, bytes: 128, ...fields });
-    if (id === 'exposed-storage') return [
-      () => attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'discover', outcome: 'allowed', detail: 'Synthetic discovery identifies the lab storage resource; no real host is contacted.' }),
-      context => {
+    switch (actionId) {
+      case 'discover': return () => attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'discover', outcome: 'allowed', detail: 'Synthetic discovery identifies the lab storage resource; no real host is contacted.' });
+      case 'storage-list': return context => {
         context.blocked = this._policies.storagePrivate;
         attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'list-objects', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'storagePrivate', detail: context.blocked ? 'Private access denies the anonymous object listing.' : 'The public storage policy permits anonymous object listing.' });
-      },
-      context => {
+      };
+      case 'storage-read': return context => {
         context.blocked = this._policies.storagePrivate;
         attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'read-object', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'storagePrivate', bytes: context.blocked ? 128 : 12000, detail: context.blocked ? 'Anonymous object reads are denied by the new private-access policy.' : 'Anonymous access reads a synthetic customer object. No real data exists.' });
-      },
-    ];
-    if (id === 'credential-abuse') return [
-      ...[1, 2, 3].map(attempt => () => attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: 'denied', kind: 'blocked', principal: 'lab-admin', authentication: 'password', detail: `Synthetic password attempt ${attempt} is rejected.` })),
-      context => {
+      };
+      case 'password-guess': return context => {
+        context.guesses = (context.guesses ?? 0) + 1;
+        attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: 'denied', kind: 'blocked', principal: 'lab-admin', authentication: 'password', detail: `Synthetic password attempt ${context.guesses} is rejected.` });
+      };
+      case 'stolen-password-signin': return context => {
         context.blocked = this._policies.requireMfa;
+        context.session = !context.blocked;
         attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'lab-admin', authentication: 'password', authenticated: !context.blocked, control: 'requireMfa', detail: context.blocked ? 'A valid modeled password is insufficient: the MFA requirement denies the session.' : 'A modeled stolen password creates an administrator session after repeated failures.' });
-      },
-      context => {
-        // Session availability is the sign-in outcome from the preceding step.
-        attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'admin-request', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'lab-admin', authenticated: !context.blocked, detail: context.blocked ? 'No modeled administrator session is available; the request is denied.' : 'The unauthorized actor uses the synthetic administrator session.' });
-      },
-    ];
-    return [
-      () => attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'token-replay', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'Scenario assumption: an external actor holds a stolen low-privilege application token.' }),
-      () => attack({ source: 'gateway', target: 'app', protocol: 'HTTPS', action: 'application-request', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'A modeled application flaw lets this authenticated request invoke the service identity.' }),
-      context => {
+      };
+      case 'admin-request': return context => {
+        // Session availability is the outcome of the earlier stolen-password sign-in.
+        const denied = !context.session;
+        attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'admin-request', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'lab-admin', authenticated: !denied, detail: denied ? 'No modeled administrator session is available; the request is denied.' : 'The unauthorized actor uses the synthetic administrator session.' });
+      };
+      case 'token-replay': return context => {
+        context.token = true;
+        attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'token-replay', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'Scenario assumption: an external actor holds a stolen low-privilege application token.' });
+      };
+      case 'app-flaw-request': return context => {
+        context.serviceIdentity = true;
+        attack({ source: 'gateway', target: 'app', protocol: 'HTTPS', action: 'application-request', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'A modeled application flaw lets this authenticated request invoke the service identity.' });
+      };
+      case 'db-admin-export': return context => {
         context.blocked = this._policies.databaseLeastPrivilege;
+        context.exported = !context.blocked;
         attack({ source: 'app', target: 'db', protocol: 'SQL/TLS', action: 'admin-export', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', control: 'databaseLeastPrivilege', detail: context.blocked ? 'The application role has read-only permissions; administrative export is denied.' : 'The overly privileged application role performs an administrative data export.' });
-      },
-      context => {
-        attack({ source: context.blocked ? 'app' : 'db', target: context.blocked ? 'logs' : 'attacker', protocol: context.blocked ? 'AUDIT' : 'HTTPS', action: context.blocked ? 'export-denied-audit' : 'export-response', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', bytes: context.blocked ? 180 : 24000, detail: context.blocked ? 'Audit records the blocked export. Application reads still work.' : 'The export is represented as a synthetic response to the external actor.' });
-      },
-    ];
+      };
+      case 'exfiltrate': return context => {
+        const denied = !context.exported;
+        attack({ source: denied ? 'app' : 'db', target: denied ? 'logs' : 'attacker', protocol: denied ? 'AUDIT' : 'HTTPS', action: denied ? 'export-denied-audit' : 'export-response', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', bytes: denied ? 180 : 24000, detail: denied ? 'Audit records the blocked export. Application reads still work.' : 'The export is represented as a synthetic response to the external actor.' });
+      };
+      default: throw new Error('Unknown attack action.');
+    }
   }
 
   _emit(fields) {

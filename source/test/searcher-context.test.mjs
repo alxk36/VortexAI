@@ -64,7 +64,7 @@ test('the Searcher may cite any collapsed member id, never an unknown one', asyn
   for (let i = 0; i < 20; i++) sim.tick();
   const context = prepareContext('searcher', sim.snapshot());
   const member = context.events[0].ids.at(-1);
-  const decision = { summary: 'Routine reads only.', scenarioId: null, evidenceIds: [member], recommendationIds: [], labels: [], suspects: [] };
+  const decision = { summary: 'Routine reads only.', scenarioId: null, evidenceIds: [member], recommendationIds: [], labels: [], suspects: [], plan: [] };
   assert.deepEqual(validateDecision('searcher', decision, context), decision);
   assert.throws(() => validateDecision('searcher', { ...decision, evidenceIds: ['event-999999'] }, context));
   const result = await runAgent('searcher', sim.snapshot(), { infer: async () => decision });

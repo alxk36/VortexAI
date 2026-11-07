@@ -42,11 +42,11 @@ export class Runtime {
    * events: a run is blocked when a denied observation names a control. The
    * Attacker later sees only the scenario and result, so it can adapt to fixes.
    */
-  recordAttack(scenarioId, source, events, sinceTick) {
+  recordAttack(scenarioId, source, events, sinceTick, plan) {
     // Background user and bot traffic carries a clientId; only scenario events count here.
     const blockedBy = [...new Set(events.filter(e => e.tick > sinceTick && !e.clientId && e.outcome === 'denied' && e.control).map(e => e.control))];
-    const name = this.simulation.snapshot().scenarios.find(s => s.id === scenarioId)?.name ?? scenarioId;
-    this.attackHistory.unshift({ scenarioId, name, source, result: blockedBy.length ? 'blocked' : 'succeeded', blockedBy, time: new Date().toISOString() });
+    const name = plan ? `AI chain: ${plan.join(' → ')}` : this.simulation.snapshot().scenarios.find(s => s.id === scenarioId)?.name ?? scenarioId;
+    this.attackHistory.unshift({ scenarioId, name, source, result: blockedBy.length ? 'blocked' : 'succeeded', blockedBy, ...(plan ? { plan: [...plan] } : {}), time: new Date().toISOString() });
     this.attackHistory = this.attackHistory.slice(0, 12);
   }
   /** Simulator runs advance one step per tick; settle once the run has finished. */
@@ -54,9 +54,9 @@ export class Runtime {
     if (!this.pendingAttack) return;
     const state = this.simulation.snapshot();
     if (state.activeScenario) return;
-    const { scenarioId, source, startTick } = this.pendingAttack;
+    const { scenarioId, source, startTick, plan } = this.pendingAttack;
     this.pendingAttack = null;
-    this.recordAttack(scenarioId, source, state.events, startTick);
+    this.recordAttack(scenarioId, source, state.events, startTick, plan);
   }
   /** Start a scenario in the current mode and track its outcome. */
   async launch(id, source) {
@@ -70,6 +70,13 @@ export class Runtime {
       this.ingest(await this.executor('/scenario', {id}));
       this.recordAttack(id, source, this.realState.events, startTick);
     }
+  }
+  /** AI-composed chains run only in the in-memory simulator. */
+  async launchPlan(actions, source) {
+    if (this.mode !== 'simulation') throw new Error('AI-composed attack chains run in the simulator only.');
+    const startTick = this.simulation.snapshot().tick;
+    this.simulation.runPlan({ actions, name: `AI chain: ${actions.join(' → ')}` });
+    this.pendingAttack = { scenarioId: 'custom', source, startTick, plan: [...actions] };
   }
   async executor(path, body) {
     if (!this.container || !this.executorToken) throw new Error('Real services require the verified Docker lab. Run npm run lab:up.');
@@ -112,6 +119,8 @@ export class Runtime {
       result.nodes = result.nodes.map(node=>({...node,...structuredClone(this.realState?.nodeSettings?.[node.id] || {}),description: node.id==='db' ? 'Real SQLite-backed service in a disposable container. Administrative export is controlled separately from normal reads.' : node.id==='logs' ? 'Collected HTTP observations returned by the real services. No packet capture is claimed.' : `Lab resource: ${node.label}. Real service traffic is observed inside the isolated container network.`}));
       result.scenarios=result.scenarios.map(s=>({...s,description:{'exposed-storage':'Request disposable objects anonymously from the real storage service; private access blocks the replay.','credential-abuse':'Three failed demo sign-ins precede a known lab password. The demonstration second-factor gate blocks the password-only replay.','lateral-movement':'A fixed demo token invokes an intentionally overpowered application export route. Restricting the database role blocks export.'}[s.id]}));
       result.edges = result.edges.map(edge=>({...edge,label:edge.label.replace('HTTPS','HTTP').replace('SQL','HTTP / SQLite')}));
+      // The real-service executor runs only its scripted scenarios.
+      delete result.attackActions;
     }
     result.runtime = {mode:this.mode,available:this.container,detail:this.detail,containmentVerified:!!this.realState?.containmentVerified};
     result.ai = {available:this.container,detail:this.aiDetail,runs:structuredClone(this.runs)};
@@ -235,7 +244,7 @@ export class Runtime {
         try {
           const remote=await internalJson(`http://${agent}:8080/run`,this.agentToken,{context},this.fetch);
           if(remote.agent!==agent || !['model','fallback'].includes(remote.mode) || remote.provider!=='anthropic' || remote.model!==DEFAULT_MODEL) throw new Error('Invalid agent metadata.');
-          const decision=validateDecision(agent,{summary:remote.summary,scenarioId:remote.scenarioId,evidenceIds:remote.evidenceIds,recommendationIds:remote.recommendationIds,labels:remote.labels,suspects:remote.suspects},context);
+          const decision=validateDecision(agent,{summary:remote.summary,scenarioId:remote.scenarioId,evidenceIds:remote.evidenceIds,recommendationIds:remote.recommendationIds,labels:remote.labels,suspects:remote.suspects,plan:remote.plan},context);
           const servedBy=remote.mode==='model'?servedModel(remote.servedBy):undefined;
           result={agent,mode:remote.mode,model:DEFAULT_MODEL,provider:'anthropic',...decision,...(servedBy?{servedBy}:{}),...(remote.mode==='fallback'?{reason:'Broker used deterministic fallback; no model decision was available.'}:{})};
         }
@@ -246,7 +255,8 @@ export class Runtime {
         : result.servedBy && result.servedBy!==result.model ? `${result.servedBy}: ${agent} completed a validated response after ${result.model} declined (Anthropic server-side fallback).`
         : `${result.model}: ${agent} completed a validated response.`;
       // Only the allowlisted scenario choice is executable. Searcher/Builder stay read-only.
-      if (agent==='attacker' && result.scenarioId) {
+      if (agent==='attacker' && result.plan?.length) await this.launchPlan(result.plan, 'ai');
+      else if (agent==='attacker' && result.scenarioId) {
         const catalog=this.simulation.snapshot().scenarios;
         if (!catalog.some(s=>s.id===result.scenarioId)) throw new Error('Agent selected an unsupported scenario.');
         await this.launch(result.scenarioId, 'ai');

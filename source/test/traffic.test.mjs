@@ -111,7 +111,7 @@ test('the Searcher sees per-client activity and may name only listed clients as 
   assert.deepEqual(Object.keys(context.clients[0]).sort(), ['accountsTried', 'anonymousStorage', 'clientId', 'denied', 'failedSignIns', 'lastSeenTick', 'peakPerTick', 'requests', 'successfulSignIns']);
   assert.deepEqual(prepareContext('searcher', context), context, 'idempotent across trust boundaries');
   assert.ok(JSON.stringify(context).length < 28_000, 'fits the 32 KiB agent request limit');
-  const base = { summary: 'Three automated clients.', scenarioId: null, evidenceIds: [], recommendationIds: [], labels: [], suspects: [] };
+  const base = { summary: 'Three automated clients.', scenarioId: null, evidenceIds: [], recommendationIds: [], labels: [], suspects: [], plan: [] };
   assert.deepEqual(validateDecision('searcher', { ...base, suspects: [stuffer] }, context).suspects, [stuffer]);
   assert.throws(() => validateDecision('searcher', { ...base, suspects: ['198.51.100.1'] }, context), /suspect/i);
   assert.throws(() => validateDecision('builder', { ...base, suspects: [stuffer] }, prepareContext('builder', snap)), /suspect/i);

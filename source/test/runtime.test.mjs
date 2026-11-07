@@ -65,7 +65,7 @@ function fixture({ verified = true, aiResult, failPolicy = false } = {}) {
 
 const modelResult = (agent, fields={}) => ({
   agent, mode:'model', provider:'anthropic', model:DEFAULT_MODEL,
-  summary:'Bounded model analysis for this lab.', scenarioId:null, evidenceIds:[], recommendationIds:[], labels:[],suspects:[], ...fields,
+  summary:'Bounded model analysis for this lab.', scenarioId:null, evidenceIds:[], recommendationIds:[], labels:[],suspects:[],plan:[], ...fields,
 });
 
 test('real mode requires a container and successful containment attestation', async()=>{
