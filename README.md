@@ -1,57 +1,93 @@
-# VortexAI — local cloud security lab
+# VortexAI — cloud security lab
 
-A provider-neutral, in-memory cloud simulation with a rotatable 3D traffic map and three explainable agents: **Attacker**, **Searcher**, and **Builder**. No cloud account, API key, downloads, or package installation required.
+A provider-neutral learning platform with a 3D traffic map, bounded attack scenarios, evidence-based findings, and administrator-approved fixes. Choose an **in-memory simulation** or an **isolated Docker service lab**. Separate Attacker, Searcher, and Builder workers connect to **Claude Opus 5.5** through a restricted broker, with explicit fallback when the model is unavailable.
 
-## Run
+## Quick start: simulation
 
-Requires Node.js 22 or newer. From this project folder:
+From this project folder, using Node.js 24:
 
 ```sh
 npm start
 ```
 
-Open **http://127.0.0.1:4173** in your browser. Keep the terminal running; press Ctrl+C to stop. If PowerShell blocks `npm.ps1`, use `npm.cmd start` or `node server.mjs` instead. The server binds only to loopback. `PORT` can override the port.
+Open [http://127.0.0.1:4173](http://127.0.0.1:4173). No cloud account, package installation, or API key is required for the simulation. Keep the terminal running; Ctrl+C stops it. If PowerShell blocks `npm.ps1`, use `npm.cmd start` or `node server.mjs`.
 
-## Try the complete feedback loop
+## Real services and Claude Opus 5.5
 
-1. Watch normal requests travel through the gateway, load balancer, application, and data services. Drag the map to orbit; scroll over it to zoom. Use **Inspect resource** for node details.
-2. Run **Exposed storage**. Within three simulation ticks, Searcher records successful anonymous access and Builder proposes private storage access.
-3. Expand the evidence and tradeoff. After the scenario finishes, select **Approve & apply in lab**.
-4. Run **Exposed storage** again. Anonymous access is denied and the recommendation reports a verified blocked replay. Authorized application reads continue.
-5. Repeat with **Credential abuse** (MFA requirement) and **Lateral movement** (remove administrative export privileges).
-6. Use **Pause simulation** to inspect the event stream and **Reset lab** to restore the vulnerable starting state.
+Requires Docker Desktop using Linux containers/WSL 2 on Windows, Docker Engine 28+, and Compose. Stop any standalone simulation server on port 4173 first.
 
-All browser tabs share one server session. State and evidence are held in memory and cleared on reset or server restart. The event feed retains the latest 160 records; each finding preserves up to eight evidence records. Metrics are cumulative for the session. Attack events count allowed attack-labeled actions; blocked events include rejected credential guesses and blocked replays.
+```sh
+npm run lab:setup
+```
 
-## What is implemented
+Open the generated `.env` locally and put your Anthropic key after `ANTHROPIC_API_KEY=`. Keep `ANTHROPIC_MODEL=claude-opus-5-5`. An empty key enables visible fallback mode; it does not produce a live AI result. The key belongs only in `.env`, never in chat or the dashboard.
 
-- Nine virtual resources with explicit topology and 3D coordinates.
-- Normal request/response traffic and three deterministic attack scenarios.
-- Attacker: generates only predefined synthetic actions, not real network requests.
-- Searcher: inspects observed action, identity, outcome, and recent failures, without using scenario labels to decide findings.
-- Builder: proposes a specific policy change with a tradeoff; admin approval is required and replay verifies the modeled mitigation.
-- Responsive dashboard, traffic filter, resource inspection, pause/reset, and reduced-motion support.
-- Loopback-only HTTP interface, strict command validation, bounded request bodies, and browser-origin protections.
+```sh
+npm run lab:up
+```
 
-This is a runnable prototype, not an actual cloud, VM, packet capture, or trained AI system. It deliberately models only three paths. No exploit payloads or outbound network capabilities exist in the simulation engine. It does not rely on a reward penalty to enforce containment. A future real-service lab needs separate infrastructure-level isolation.
+This builds and starts 12 containers, then runs containment checks. Open the dashboard and choose **Isolated service lab** only after the checks pass. Six target services handle real HTTP requests, with SQLite-backed demo database/storage. They have no published ports or external network attachment. The model broker alone holds the Anthropic key and calls the provider. The trusted dashboard also has an external route through its frontend bridge; targets, executor, and agents stay on internal isolated networks.
 
-## Validate
+```sh
+npm run lab:status
+npm run lab:verify
+npm run lab:down
+```
+
+Read [the full service-lab guide](docs/REAL-LAB.md) for setup, the network diagram, trust boundaries, verification gates, and limitations. Live Docker containment and provider access require verification on the machine where you run the lab; unit tests and fallback results do not certify either.
+
+## Try the feedback loop
+
+1. Watch normal traffic and inspect a resource.
+2. Run **Exposed storage**, **Credential abuse**, or **Lateral movement**. These are the only executable attack scenarios.
+3. Review Searcher's recorded evidence and Builder's proposed policy change and tradeoff.
+4. After the scenario finishes, select **Approve & apply in lab**.
+5. Replay the same scenario and look for a blocked result while normal application access continues.
+6. Use the three agent buttons for model-assisted planning, assessment, and advice. Each result identifies **MODEL** or **FALLBACK**. Builder never applies a fix itself.
+
+In simulation mode, events are synthetic. In service mode, events describe actual requests and authorization outcomes inside the teaching lab. The 3D animation is an explanation of event records, not packet capture. Data is fabricated, state is transient, and all browser tabs share the selected server environment.
+
+## Mouse controls
+
+| Gesture | Action |
+| --- | --- |
+| Left/middle drag | Orbit a full 360° horizontally and vertically; vertical drag direction is reversed |
+| Shift + drag | Pan |
+| Wheel | Zoom |
+| Ctrl + click | Select/toggle nodes |
+| Ctrl + left drag | Move a node, or the entire group when dragging a selected node |
+| Alt + left drag | Draw a box to select multiple nodes |
+| Right click a selected node | Information and shared status/action options for the selection |
+| Ctrl + right drag | Also move selected nodes on their horizontal plane |
+| Escape during a drag | Cancel the move or box selection |
+
+Use **Inspect resource → Edit selected** for keyboard access. Positions persist in this browser and do not alter service connectivity. **Reset view** restores the camera; **Reset layout** restores positions. In service mode, status/action editing applies to the six actual services: pause/quarantine denies ordinary requests, and Observe annotates telemetry. Health/control routes stay available; containers and network isolation are unchanged. Conceptual user/attacker/telemetry nodes have layout controls only. Security-policy changes still use reviewed recommendations.
+
+## Scope and validation
 
 ```sh
 npm test
 ```
 
-Tests cover baseline traffic, all three finding/remediation/replay loops, legitimate traffic after fixes, pause/reset, evidence retention, invalid commands, and HTTP boundary checks. No external services are used by the tests.
+Tests cover simulations, service handlers, observed findings and fixed replays, AI output validation/fallback, HTTP limits, containment-inspection rules, and grid movement math. They do not issue paid model requests or prove real Docker isolation.
+
+This is a purpose-built teaching lab, not an actual cloud provider or arbitrary exploit runner. The full 12-technique, seeded-clone campaign platform in `prompts/` is still a roadmap; this stage adapts its agent boundaries and approval pattern to the existing Node code. For arbitrary untrusted exploit execution later, use a separate disposable VM with independent containment controls.
 
 ## Project map
 
-| File | Purpose |
+| Location | Purpose |
 | --- | --- |
-| `src/simulation.mjs` | Virtual resources, policy model, scenarios, detection, recommendations |
-| `server.mjs` | Local HTTP API, static assets, simulation clock |
-| `public/app.mjs` | 3D projection, traffic animation, dashboard interactions |
-| `public/index.html`, `public/styles.css` | Accessible interface and responsive layout |
-| `test/` | Simulation and HTTP tests using Node's built-in test runner |
-| `docs/ARCHITECTURE.md` | Cloud traffic diagram, agent contracts, and optional container/AI roadmap |
+| `src/simulation.mjs` | In-memory cloud, policies, scenarios, evidence and recommendations |
+| `src/runtime.mjs` | Environment switching and independent-agent orchestration |
+| `src/findings.mjs` | Canonical `GET /api/findings` adapter for the shared finding fields |
+| `lab/` | Bounded executor, actual HTTP teaching services, namespace probes |
+| `ai/` | Three worker roles, context filtering, response validation, Anthropic broker |
+| `compose.yaml`, `Dockerfile` | Container topology and restricted runtime settings |
+| `scripts/` | Local token setup, Docker lifecycle and live containment verifier |
+| `public/` | Dashboard, perspective rendering, grid controls |
+| `test/` | Node built-in test runner suite |
+| `docs/REAL-LAB.md` | Current real-service/AI setup and limitations |
+| `docs/ARCHITECTURE.md` | Earlier in-memory baseline architecture; see the real-lab guide for this stage |
+| `prompts/` | Team design reference and deferred broader contract |
 
-The UI polls `GET /api/state`. Named local actions use `POST /api/scenario`, `/api/recommendation`, `/api/running`, and `/api/reset`. The API accepts predefined IDs, never hostnames, arbitrary code, or shell commands.
+The dashboard reads `GET /api/state` and uses named commands for scenarios, recommendations, mode switching, node controls, and agent runs. It never supplies arbitrary target URLs, shell commands, or model-generated executable code.

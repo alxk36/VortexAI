@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Simulation } from './src/simulation.mjs';
+import { Runtime } from './src/runtime.mjs';
+import { sharedFindings } from './src/findings.mjs';
 
 const PUBLIC_DIRECTORY = fileURLToPath(new URL('./public/', import.meta.url));
 const BODY_LIMIT = 4096;
@@ -10,6 +12,7 @@ const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']],
+  ['/grid-math.mjs', ['grid-math.mjs', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
@@ -103,26 +106,45 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
 
       // Read only explicit routes. Do not map arbitrary URL paths to disk.
       const path = request.url?.split('?')[0];
+      if (path === '/api/findings') {
+        if (request.method !== 'GET') throw fail('Use GET for this endpoint.',405);
+        return sendJson(response,200,sharedFindings(await simulation.snapshot()));
+      }
       if (path === '/api/state') {
         if (request.method !== 'GET') throw fail('Use GET for this endpoint.', 405);
-        return sendJson(response, 200, simulation.snapshot());
+        return sendJson(response, 200, await simulation.snapshot());
       }
-      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset']);
+      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run']);
       if (mutations.has(path)) {
         if (request.method !== 'POST') throw fail('Use POST for this endpoint.', 405);
         const body = await readJson(request);
-        if (path === '/api/scenario') simulation.runScenario(validateId(body));
-        if (path === '/api/recommendation') simulation.applyRecommendation(validateId(body));
+        if (path === '/api/scenario') await simulation.runScenario(validateId(body));
+        if (path === '/api/recommendation') await simulation.applyRecommendation(validateId(body));
         if (path === '/api/running') {
           validateFields(body, ['running']);
           if (typeof body.running !== 'boolean') throw fail('running must be a boolean.');
-          simulation.setRunning(body.running);
+          await simulation.setRunning(body.running);
         }
         if (path === '/api/reset') {
           validateFields(body, []);
-          simulation.reset();
+          await simulation.reset();
         }
-        return sendJson(response, 200, simulation.snapshot());
+        if (path === '/api/node') {
+          validateFields(body, ['id','status','action']);
+          if (typeof body.id !== 'string') throw fail('A node id is required.');
+          await simulation.updateNode(body.id, body.status, body.action);
+        }
+        if (path === '/api/mode') {
+          validateFields(body,['mode']);
+          if (!simulation.setMode) throw fail('Runtime mode switching is unavailable.');
+          await simulation.setMode(body.mode);
+        }
+        if (path === '/api/ai/run') {
+          validateFields(body,['agent']);
+          if (!simulation.runAI) throw fail('Agent runtime is unavailable.');
+          await simulation.runAI(body.agent);
+        }
+        return sendJson(response, 200, await simulation.snapshot());
       }
       const asset = ASSETS.get(path);
       if (!asset) throw fail('Not found.', 404);
@@ -146,7 +168,7 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
   server.on('listening', () => {
-    if (autoTick) interval = setInterval(() => simulation.tick(), tickMs).unref();
+    if (autoTick) interval = setInterval(() => Promise.resolve(simulation.tick()).catch(()=>{}), tickMs).unref();
   });
   server.on('close', () => clearInterval(interval));
   return server;
@@ -160,14 +182,16 @@ if (isDirectRun) {
     console.error('PORT must be an integer from 1 to 65535.');
     process.exitCode = 1;
   } else {
-    const server = createServer();
+    const server = createServer({simulation:new Runtime()});
     server.on('error', (error) => {
       console.error(`VortexAI could not start: ${error.message}`);
       process.exitCode = 1;
     });
-    server.listen(port, '127.0.0.1', () => {
+    // Docker publishes this container listener on host loopback only. Local mode
+    // still binds directly to loopback; browser Host/Origin checks apply to both.
+    server.listen(port, process.env.VORTEX_CONTAINER === '1' ? '0.0.0.0' : '127.0.0.1', () => {
       console.log(`VortexAI local simulation: http://127.0.0.1:${port}`);
-      console.log('Synthetic traffic only. Press Ctrl+C to stop.');
+      console.log('Starts in simulator mode. Verified Docker services can be selected in the dashboard.');
     });
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.once(signal, () => server.close());

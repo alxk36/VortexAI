@@ -4,9 +4,14 @@
   "private": true,
   "description": "A local, provider-neutral cloud security traffic simulator",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=24" },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "lab:setup": "node scripts/lab-setup.mjs",
+    "lab:up": "node scripts/docker-task.mjs up",
+    "lab:verify": "node scripts/docker-task.mjs verify",
+    "lab:down": "node scripts/docker-task.mjs down",
+    "lab:status": "node scripts/docker-task.mjs status"
   }
 }

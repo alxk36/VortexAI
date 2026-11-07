@@ -1,1 +1,8 @@
 I'm trying to create a simulated/virtual cloud environment and a platform showing a 3D overview of the traffics in the environment for 3 agents - Attacker, hacking the cloud system externally for the systematical problems; Searcher, looking for suspicious activity in live environment; Builder, when searcher or attacker diagnoses the problem/weak-point in the system, it suggests the admin how to improve the cloud system. Show a diagram of how cloud traffic works and how attacks would be simulated and help create the environment.
+
+Help me take this to the next stage: create an isolated virtual cloud with real services and connect the Attacker, Searcher, and Builder to actual AI models while keeping all attacks contained. Read the "prompts" file and dock the simulation and the agents. Make the 3D grid have the same mouse controls as the sketchup tool of the image.
+Pressing "Ctrl" Key should make you select nodes; right click of the mouse on the node should give information of the node and a dropbox to edit action or status, and Ctrl + Right Click should move the nodes on the plane.
+
+Adding to Pressing "Ctrl" key, while pressing if you click a node and drag, the nodes should move around the platform.
+Pressing "Alt" Key should make pressing on the left click and drag recognize multiple nodes at once and make them able to shift with Ctrl key and right click on one of the selected nodes gives a dropbox for commonly shared options.
+Also the moving around the platform with left click is still not up to my needs. The y axis movement should be reversed and why is y axis only accessible to certain point, change that to 360 on all angles.

@@ -64,6 +64,7 @@ export class Simulation {
     this._recommendations = [];
     this._failures = new Map();
     this._active = null;
+    this._nodeSettings = Object.fromEntries(NODES.map(n=>[n.id,{status:'active',action:'normal'}]));
     this._policies = { storagePrivate: false, requireMfa: false, databaseLeastPrivilege: false };
     this._metrics = { totalEvents: 0, attackEvents: 0, blockedEvents: 0, attackAttempts: 0 };
     this._agents = {
@@ -79,7 +80,7 @@ export class Simulation {
     return clone({
       running: this.running,
       tick: this._tick,
-      nodes: NODES,
+      nodes: NODES.map(n=>({...n,...this._nodeSettings[n.id]})),
       edges: EDGES,
       events: this._events,
       findings: this._findings,
@@ -98,6 +99,15 @@ export class Simulation {
   setRunning(running) {
     if (typeof running !== 'boolean') throw new TypeError('running must be a boolean.');
     this.running = running;
+    return this.snapshot();
+  }
+
+  /** UI policy controls are finite model state, never commands for the host. */
+  updateNode(id,status,action) {
+    if (!Object.hasOwn(this._nodeSettings,id)) throw new Error('Unknown node.');
+    if (!['active','paused'].includes(status) || !['normal','observe','quarantine'].includes(action)) throw new Error('Invalid node status or action.');
+    if (this._active) throw new Error('Finish the scenario before changing node controls.');
+    this._nodeSettings[id]={status,action};
     return this.snapshot();
   }
 
@@ -130,6 +140,8 @@ export class Simulation {
     const scenario = SCENARIOS.find(item => item.id === id);
     if (!scenario) throw new Error('Unknown scenario. Choose one of the built-in simulations.');
     if (this._active) throw new Error('A scenario is already running. Finish it or reset the lab first.');
+    const required = {'exposed-storage':['attacker','gateway','storage'],'credential-abuse':['attacker','iam','app'],'lateral-movement':['attacker','gateway','app','db']}[id];
+    if (required.some(node=>this._nodeSettings[node].status==='paused'||this._nodeSettings[node].action==='quarantine')) throw new Error('Restore the scenario resources to active, non-quarantined status before running it.');
     this._active = { id, name: scenario.name, index: 0, context: { blocked: false }, steps: this._scenarioSteps(id) };
     this._metrics.attackAttempts += 1;
     this._agents.attacker = { status: this.running ? 'Simulating' : 'Queued', detail: `${scenario.name}: ${scenario.steps} synthetic steps queued.` };
@@ -157,6 +169,14 @@ export class Simulation {
   }
 
   _normalTraffic() {
+    // Stop at an unavailable resource: downstream work must not appear to succeed.
+    const dataNodeForGate = this._tick % 2 ? 'db' : 'storage';
+    const path = ['client','gateway','lb','app',dataNodeForGate];
+    const blocked = path.findIndex(id=>this._nodeSettings[id].status==='paused'||this._nodeSettings[id].action==='quarantine');
+    if (blocked >= 0) {
+      for (let i=1;i<=Math.max(1,blocked);i++) this._emit({source:path[i-1],target:path[i],kind:i>=blocked?'blocked':'normal',outcome:i>=blocked?'denied':'allowed',protocol:'HTTPS',action:'request',bytes:128,detail:i>=blocked?'The simulator node is paused or quarantined. No downstream request is generated.':'Request advances toward the next available resource.'});
+      return;
+    }
     const base = { kind: 'normal', outcome: 'allowed', authenticated: true, principal: 'application-user' };
     this._emit({ ...base, source: 'client', target: 'gateway', protocol: 'HTTPS', action: 'request', bytes: 820, detail: 'Authenticated user requests the application.' });
     this._emit({ ...base, source: 'gateway', target: 'lb', protocol: 'HTTPS', action: 'route', bytes: 820, detail: 'Gateway forwards the accepted request.' });
@@ -209,6 +229,7 @@ export class Simulation {
 
   _emit(fields) {
     const event = { id: `event-${++this._sequence}`, tick: this._tick, time: timeAt(this._tick), ...fields };
+    if ([fields.source,fields.target].some(id=>this._nodeSettings[id]?.action==='observe')) event.detail += ' [Enhanced observation enabled for this node.]';
     this._events.unshift(event);
     this._events.length = Math.min(this._events.length, 160);
     this._metrics.totalEvents += 1;
@@ -254,6 +275,18 @@ export class Simulation {
       finding = { id: `finding-${policyKey}`, title, severity, nodeId, policyKey, evidence: [], evidenceDetails: [], status: 'open', recommendationId: `recommendation-${policyKey}`, firstSeenTick: this._tick };
       this._findings.unshift(finding);
       this._recommendations.unshift({ id: finding.recommendationId, findingId: finding.id, ...REMEDIATIONS[policyKey], policyKey, applied: false, validation: 'pending' });
+    } else if (finding.status === 'resolved') {
+      // An observed allowed violation outranks a previously acknowledged policy.
+      // Real services can restart or drift; a past blocked replay must never stay
+      // displayed as proof that the now-successful path remains mitigated.
+      finding.status = 'open';
+      finding.regressionTick = this._tick;
+      delete finding.resolvedTick;
+      const recommendation = this._recommendations.find(item => item.id === finding.recommendationId);
+      recommendation.applied = false;
+      recommendation.validation = 'pending';
+      delete recommendation.validationEvent;
+      delete recommendation.appliedTick;
     }
     for (const event of evidence) {
       if (!finding.evidence.includes(event.id)) {
@@ -264,7 +297,14 @@ export class Simulation {
     // Preserve compact evidence copies after the rolling activity feed expires.
     finding.evidence = finding.evidence.slice(-8);
     finding.evidenceDetails = finding.evidenceDetails.slice(-8);
-    this._agents.searcher = { status: 'Finding detected', detail: title };
-    this._agents.builder = { status: 'Recommendation ready', detail: REMEDIATIONS[policyKey].title };
+    const regression = finding.regressionTick !== undefined;
+    this._agents.searcher = {
+      status: regression ? 'Regression detected' : 'Finding detected',
+      detail: regression ? `A previously mitigated path succeeded again: ${title}. Review the new evidence.` : title,
+    };
+    this._agents.builder = {
+      status: 'Recommendation ready',
+      detail: regression ? `Re-approval and a fresh replay are required: ${REMEDIATIONS[policyKey].title}.` : REMEDIATIONS[policyKey].title,
+    };
   }
 }

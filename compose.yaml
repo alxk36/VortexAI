@@ -1,0 +1,150 @@
+name: vortexai
+
+x-service: &service
+  image: vortexai-lab:local
+  build: .
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 80
+  mem_limit: 256m
+  cpus: 0.5
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000"]
+  sysctls:
+    net.ipv4.ip_forward: "0"
+    net.ipv6.conf.all.disable_ipv6: "1"
+  restart: "no"
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+
+x-target: &target
+  <<: *service
+  command: [node, lab/services.mjs]
+  networks: [targets]
+  environment: &target-env
+    LAB_CONTROL_TOKEN: ${LAB_CONTROL_TOKEN:?Run npm run lab:setup}
+    LAB_APP_TOKEN: ${LAB_APP_TOKEN:?Run npm run lab:setup}
+
+x-agent: &agent
+  <<: *service
+  command: [node, ai/agent-service.mjs]
+  networks: [control, inference]
+  environment: &agent-env
+    AGENT_CONTROL_TOKEN: ${AGENT_CONTROL_TOKEN:?Run npm run lab:setup}
+    AGENT_BROKER_TOKEN: ${AGENT_BROKER_TOKEN:?Run npm run lab:setup}
+    ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+
+services:
+  dashboard:
+    <<: *service
+    command: [node, server.mjs]
+    ports: ["127.0.0.1:4173:4173"]
+    networks: [frontend, control]
+    environment:
+      PORT: "4173"
+      LAB_EXECUTOR_TOKEN: ${LAB_EXECUTOR_TOKEN:?Run npm run lab:setup}
+      AGENT_CONTROL_TOKEN: ${AGENT_CONTROL_TOKEN:?Run npm run lab:setup}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4173/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  executor:
+    <<: *service
+    command: [node, lab/executor.mjs]
+    networks:
+      control:
+        ipv4_address: 172.30.40.3
+      targets: {}
+    environment:
+      CONTROL_BIND: 172.30.40.3
+      LAB_EXECUTOR_TOKEN: ${LAB_EXECUTOR_TOKEN:?Run npm run lab:setup}
+      LAB_CONTROL_TOKEN: ${LAB_CONTROL_TOKEN:?Run npm run lab:setup}
+      CONTAINMENT_MARKER: /tmp/containment-verified
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://172.30.40.3:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      gateway: {condition: service_healthy}
+      storage: {condition: service_healthy}
+      iam: {condition: service_healthy}
+      db: {condition: service_healthy}
+  gateway:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: gateway}
+    depends_on: {lb: {condition: service_healthy}}
+  lb:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: lb}
+    depends_on: {app: {condition: service_healthy}}
+  app:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: app}
+    depends_on:
+      storage: {condition: service_healthy}
+      db: {condition: service_healthy}
+  storage:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: storage}
+  iam:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: iam}
+  db:
+    <<: *target
+    environment: {<<: *target-env, SERVICE_ROLE: db}
+  attacker:
+    <<: *agent
+    environment: {<<: *agent-env, AGENT_ROLE: attacker}
+  searcher:
+    <<: *agent
+    environment: {<<: *agent-env, AGENT_ROLE: searcher}
+  builder:
+    <<: *agent
+    environment: {<<: *agent-env, AGENT_ROLE: builder}
+  model-broker:
+    <<: *service
+    command: [node, ai/broker.mjs]
+    networks: [inference, model_egress]
+    environment:
+      AGENT_BROKER_TOKEN: ${AGENT_BROKER_TOKEN:?Run npm run lab:setup}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+
+# Engine >=28 required: isolated bridges have no host gateway address.
+# Targets have no published ports and no attachment to any non-internal network.
+networks:
+  frontend:
+    # Trusted dashboard ingress only. Docker Desktop needs NAT publishing for
+    # host-loopback access; targets and agents never join this bridge.
+    internal: false
+    enable_ipv6: false
+  targets:
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config: [{subnet: 172.30.41.0/24}]
+  control:
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config: [{subnet: 172.30.40.0/24, ip_range: 172.30.40.128/25}]
+  inference:
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config: [{subnet: 172.30.42.0/24}]
+  model_egress:
+    enable_ipv6: false
