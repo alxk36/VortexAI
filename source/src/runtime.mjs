@@ -251,9 +251,9 @@ export class Runtime {
         catch { result=await runAgent(agent,context); result.reason='Agent service unavailable; deterministic fallback used.'; }
       } else result=await runAgent(agent,context);
       this.runs.unshift({...result,time:new Date().toISOString()});this.runs=this.runs.slice(0,12);
-      this.aiDetail = result.mode!=='model' ? `${agent}: fallback used. ${result.reason || 'Configure the Anthropic key and start the agent containers.'}`
-        : result.servedBy && result.servedBy!==result.model ? `${result.servedBy}: ${agent} completed a validated response after ${result.model} declined (Anthropic server-side fallback).`
-        : `${result.model}: ${agent} completed a validated response.`;
+      this.aiDetail = result.mode!=='model' ? `${agent}: rule fallback. ${result.reason || 'Start the agent containers and add the Anthropic key.'}`
+        : result.servedBy && result.servedBy!==result.model ? `${agent}: answered by ${result.servedBy} (${result.model} declined; server-side fallback).`
+        : `${agent}: answered by ${result.model}.`;
       // Only the allowlisted scenario choice is executable. Searcher/Builder stay read-only.
       if (agent==='attacker' && result.plan?.length) await this.launchPlan(result.plan, 'ai');
       else if (agent==='attacker' && result.scenarioId) {

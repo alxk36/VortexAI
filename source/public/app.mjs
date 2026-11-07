@@ -79,7 +79,7 @@ function update(next) {
     try { layout = sanitizeLayout(JSON.parse(localStorage.getItem(layoutKey(nextMode)) || '{}'), state.nodes.map(n=>n.id)); }
     catch { layout = {}; }
     lastMode = nextMode;
-    $('scenarios').innerHTML = state.scenarios.map((s,i) => `<article class="scenario"><span class="scenario-number">SCENARIO / 0${i+1}</span><h3>${escape(s.name)}</h3><p>${escape(s.description)}</p><button data-scenario="${escape(s.id)}">${nextMode==='lab'?'Run lab scenario':'Run simulation'} <span aria-hidden="true">↗</span></button></article>`).join('');
+    $('scenarios').innerHTML = state.scenarios.map((s,i) => `<article class="scenario"><span class="scenario-number">SCENARIO / 0${i+1}</span><h3>${escape(s.name)}</h3><details class="scenario-about"><summary>What it does</summary><p>${escape(s.description)}</p></details><button data-scenario="${escape(s.id)}">${nextMode==='lab'?'Run lab scenario':'Run simulation'} <span aria-hidden="true">↗</span></button></article>`).join('');
     $('resource').innerHTML = '<option value="">Select a node…</option>' + state.nodes.map(n => `<option value="${escape(n.id)}">${escape(n.label)}</option>`).join('');
     if (!state.nodes.some(n=>n.id===selected)) { selected=''; selectedNodes.clear(); }
     $('resource').value=selected;
@@ -105,10 +105,10 @@ function update(next) {
   for (const [id,key] of [['total-events','totalEvents'],['attack-events','attackEvents'],['blocked-events','blockedEvents'],['open-findings','openFindings']]) $(id).textContent = state.metrics[key].toLocaleString();
   const agentsMarkup = ['attacker','searcher','builder'].map((key,i) => {
     const agent = state.agents[key];
-    return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p>${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
+    return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
-  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${(run.plan||[]).length?`<p class="origin-list"><span class="origin-tag external">AI chain</span>${run.plan.map(step=>`<span class="evidence">${escape(step)}</span>`).join(' → ')}</p>`:''}${(run.suspects||[]).length?`<p class="origin-list"><span class="origin-tag external">Suspects</span>${run.suspects.map(s=>`<span class="evidence">${escape(s)}</span>`).join(' ')}</p>`:''}${(run.labels||[]).length?`<p class="origin-list">${run.labels.map(l=>`${originTag(l.origin)}<span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>`:''}${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
+  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>aiRunMarkup(run)).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   const historyMarkup=attackHistoryMarkup(state.attackHistory);
   if(historyMarkup!==lastHistoryMarkup){$('attack-history').innerHTML=historyMarkup;lastHistoryMarkup=historyMarkup;}
@@ -127,6 +127,27 @@ function originFor(ids) {
   }
   return null;
 }
+
+// AI run card: a one-line headline and the key facts; the full reasoning sits under Details.
+const LABEL_TEXT = {internal:'Internal · team mistake', external:'External · outside attack'};
+function headline(text) {
+  const all = String(text ?? '').trim();
+  const sentence = all.match(/^[\s\S]{12,200}?[.!?](?=\s|$)/);
+  if (sentence) return sentence[0];
+  return all.length > 160 ? `${all.slice(0, 157).trimEnd()}…` : all;
+}
+function aiRunMarkup(run) {
+  const tag = run.mode === 'model' ? 'MODEL' : run.mode === 'error' ? 'ERROR' : 'FALLBACK';
+  const chips = [];
+  if ((run.plan || []).length) chips.push(`<span class="origin-tag external">AI chain</span>${run.plan.map(step => `<span class="evidence">${escape(step)}</span>`).join(' → ')}`);
+  if ((run.suspects || []).length) chips.push(`<span class="origin-tag external">Suspects</span>${run.suspects.map(s => `<span class="evidence">${escape(s)}</span>`).join(' ')}`);
+  const counts = ['internal', 'external'].map(o => [o, (run.labels || []).filter(l => l.origin === o).length]).filter(([, n]) => n);
+  if (counts.length) chips.push(counts.map(([o, n]) => `<span class="origin-tag ${o}">${LABEL_TEXT[o]} ×${n}</span>`).join(''));
+  const labels = (run.labels || []).length ? `<p class="origin-list">${run.labels.map(l => `<span class="origin-tag ${l.origin === 'external' ? 'external' : 'internal'}">${l.origin === 'external' ? 'External' : 'Internal'}</span><span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>` : '';
+  const served = run.servedBy && run.servedBy !== run.model ? `${run.servedBy} (${run.model === 'claude-opus-5-5' ? 'Opus 5.5' : run.model} declined)` : run.model;
+  return `<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${tag}</span></div><p class="headline">${escape(headline(run.summary))}</p>${chips.map(c => `<p class="origin-list">${c}</p>`).join('')}<details><summary>Details</summary><p>${escape(run.summary)}</p>${labels}${run.reason ? `<p class="muted">${escape(run.reason)}</p>` : ''}${run.model ? `<small>${escape(run.provider)} · ${escape(served)}</small>` : ''}</details></article>`;
+}
+// End AI run card.
 
 // Attack history: how each finished run turned out, newest first, so the
 // dashboard shows the Attacker switching paths once a fix blocks one.
@@ -184,7 +205,7 @@ function renderFindings() {
   const markup = state.findings.map(f => {
     const r = state.recommendations.find(rec=>rec.id === f.recommendationId);
     const evidence = f.evidenceDetails || f.evidence.map(id=>state.events.find(e=>e.id===id)).filter(Boolean);
-    return `<article class="finding ${escape(f.status)}"><div class="finding-top"><span>${escape(f.severity)}</span><span>${f.status === 'resolved' ? 'POLICY APPLIED' : 'OPEN FINDING'}</span></div><h4>${escape(f.title)}</h4>${originTag(originFor([f.recommendationId, ...f.evidence]))}<details><summary>${f.evidence.length} evidence event${f.evidence.length===1?'':'s'}</summary>${evidence.map(e=>`<p><span class="evidence">${escape(e.id)}</span> · ${escape(e.action)} → ${escape(e.outcome)}<br>${escape(e.detail)}</p>`).join('')}</details>${r ? `<p><strong>Builder: ${escape(r.title)}</strong></p><p>${escape(r.description)}</p><details><summary>Review tradeoff</summary><p>${escape(r.tradeoff)}</p></details>${r.applied ? `<p class="validation">${r.validation==='blocked-replay' ? '✓ Verified: replay blocked by the new policy.' : 'Policy applied. Run the same scenario to verify it.'}</p>` : `<button data-recommendation="${escape(r.id)}">Approve & apply in lab</button>`}` : ''}</article>`;
+    return `<article class="finding ${escape(f.status)}"><div class="finding-top"><span>${escape(f.severity)}</span><span>${f.status === 'resolved' ? 'POLICY APPLIED' : 'OPEN FINDING'}</span></div><h4>${escape(f.title)}</h4>${originTag(originFor([f.recommendationId, ...f.evidence]))}<details><summary>${f.evidence.length} evidence event${f.evidence.length===1?'':'s'}</summary>${evidence.map(e=>`<p><span class="evidence">${escape(e.id)}</span> · ${escape(e.action)} → ${escape(e.outcome)}<br>${escape(e.detail)}</p>`).join('')}</details>${r ? `<p><strong>Builder: ${escape(r.title)}</strong></p><details><summary>Fix details</summary><p>${escape(r.description)}</p><p><strong>Tradeoff:</strong> ${escape(r.tradeoff)}</p></details>${r.applied ? `<p class="validation">${r.validation==='blocked-replay' ? '✓ Verified: replay blocked by the new policy.' : 'Policy applied. Run the same scenario to verify it.'}</p>` : `<button data-recommendation="${escape(r.id)}">Approve & apply in lab</button>`}` : ''}</article>`;
   }).join('') || '<div class="empty-state">No findings yet.<br><span>Launch a scenario to begin the investigation.</span></div>';
   // Preserve expanded evidence and focus when unrelated traffic arrives.
   if (markup !== lastFindingMarkup) { $('findings').innerHTML = markup; lastFindingMarkup = markup; }

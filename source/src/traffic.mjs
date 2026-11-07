@@ -135,7 +135,7 @@ export class TrafficModel {
     this.autoBlocks.unshift({ clientId: event.clientId, tick, untilTick: tick + BLOCK_TICKS, reason, count });
     this.autoBlocks = this.autoBlocks.slice(0, 12);
     const again = count > 1 ? ` again (blocked ${count} times)` : '';
-    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Tripwire blocked ${event.clientId}${again}: ${reason}. Expires in ${BLOCK_TICKS} ticks unless the admin unblocks it.` };
+    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Blocked ${event.clientId}${again}: ${reason}. Auto-expires in ${BLOCK_TICKS} ticks.` };
   }
 
   _overload(sim, tick) {
@@ -143,7 +143,7 @@ export class TrafficModel {
     sim.running = false;
     this.overloads.unshift({ tick, requests: this.load.requests, capacity: CAPACITY, joined: this.joined.tick === tick ? this.joined.count : 0 });
     this.overloads = this.overloads.slice(0, 12);
-    sim._agents.searcher = { status: 'System overloaded', detail: `The gateway reached its capacity of ${CAPACITY} requests in one tick, so the simulation paused to protect the services behind it. Resume when ready.` };
+    sim._agents.searcher = { status: 'System overloaded', detail: `Gateway hit ${CAPACITY} requests in one tick; paused to protect services. Press Resume.` };
   }
 
   unblock(clientId) {
