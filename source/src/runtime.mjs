@@ -4,6 +4,7 @@
  */
 import { Simulation } from './simulation.mjs';
 import { prepareContext, runAgent, validateDecision, servedModel, DEFAULT_MODEL } from '../ai/agents.mjs';
+import { performanceReport, controlText } from './performance.mjs';
 
 const ROLES = ['attacker', 'searcher', 'builder'];
 // These addresses are deployment wiring, never input accepted from a browser or model.
@@ -39,6 +40,8 @@ export class Runtime {
     this.mode = 'simulation'; this.real = new Simulation(); this.generation = null;
     this.seen = new Set(); this.realState = null; this.runs = []; this.busy = false; this.syncPromise = null;
     this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
+    // Per lab run: applied-fix ledger. Across runs: each agent's learning log.
+    this.fixes = []; this.logs = []; this.runNumber = 1; this.seenTraffic = new Set();
     this.detail = container ? 'Select real services after lab:verify passes.' : 'Start Docker with npm run lab:up to connect real services.';
     this.aiDetail = container ? 'Claude Opus 5.5 connection is checked on each run. Add ANTHROPIC_API_KEY in .env; missing access is labeled fallback.' : 'Agent containers are offline. Explicit rule fallback is available. Add your Anthropic key to .env for the Docker lab.';
   }
@@ -49,9 +52,68 @@ export class Runtime {
   recordAttack(scenarioId, source, events, sinceTick, plan) {
     // Background user and bot traffic carries a clientId; only scenario events count here.
     const blockedBy = [...new Set(events.filter(e => e.tick > sinceTick && !e.clientId && e.outcome === 'denied' && e.control).map(e => e.control))];
+    const runEvents = events.filter(e => e.tick > sinceTick && !e.clientId && e.kind && e.kind !== 'normal');
+    const exploited = [...new Set(runEvents.filter(e => e.outcome === 'allowed' && e.control).map(e => e.control))];
+    const touched = [...new Set(runEvents.filter(e => e.control).map(e => e.control))];
+    const eventIds = runEvents.map(e => e.id);
+    const endTick = Math.max(sinceTick, ...runEvents.map(e => e.tick));
     const name = plan ? `AI chain: ${plan.join(' → ')}` : this.simulation.snapshot().scenarios.find(s => s.id === scenarioId)?.name ?? scenarioId;
-    this.attackHistory.unshift({ scenarioId, name, source, result: blockedBy.length ? 'blocked' : 'succeeded', blockedBy, ...(plan ? { plan: [...plan] } : {}), time: new Date().toISOString() });
+    const flagged = eventIds.some(id => this.flaggedIds().has(id));
+    const result = blockedBy.length ? 'blocked' : 'succeeded';
+    this.attackHistory.unshift({ scenarioId, name, source, result, blockedBy, exploited, touched, eventIds, endTick, flagged, ...(plan ? { plan: [...plan] } : {}), time: new Date().toISOString() });
     this.attackHistory = this.attackHistory.slice(0, 12);
+    this.log('attacker', result === 'blocked'
+      ? `${name} was blocked by ${blockedBy.map(controlText).join(', ')}; that path is closed.`
+      : `${name} got through${exploited.length ? ` (${exploited.map(controlText).join(', ')} open)` : ''}.`);
+    // The defense must hold: a breach on a fixed path is a failed fix.
+    for (const fix of this.fixes) {
+      if (exploited.includes(fix.policyKey) && fix.appliedTick < endTick && fix.failedTick === undefined) {
+        fix.failedTick = endTick;
+        this.log('builder', `Failed: ${fix.title} did not hold; ${name} got through.`);
+      }
+    }
+    this.refreshFixes();
+  }
+  /** Event IDs the Searcher side has flagged: rule findings, AI citations, blocked-replay checks. */
+  flaggedIds() {
+    const state = this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot();
+    return new Set([
+      ...state.findings.flatMap(f => f.evidence ?? []),
+      ...state.recommendations.map(r => r.validationEvent?.id).filter(Boolean),
+      ...this.runs.filter(r => r.agent === 'searcher').flatMap(r => r.evidenceIds ?? []),
+    ]);
+  }
+  /** A fix holds once a replay is blocked by it. */
+  refreshFixes() {
+    const state = this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot();
+    for (const fix of this.fixes) {
+      if (fix.heldTick !== undefined) continue;
+      if (state.recommendations.some(r => r.policyKey === fix.policyKey && r.validation === 'blocked-replay')) {
+        fix.heldTick = state.tick;
+        this.log('builder', `Held: ${fix.title} blocked the replay.`);
+      }
+    }
+  }
+  log(agent, text) {
+    const tick = this.mode === 'lab' ? this.realState?.tick ?? 0 : this.simulation.snapshot().tick;
+    this.logs.unshift({ agent, run: this.runNumber, tick, text });
+    this.logs = this.logs.slice(0, 80);
+  }
+  /** Searcher-side traffic events worth remembering: tripwire blocks and overloads. */
+  logTraffic() {
+    const traffic = this.simulation.snapshot().traffic;
+    for (const b of traffic?.autoBlocks ?? []) {
+      const key = `block:${b.clientId}:${b.tick}`;
+      if (!this.seenTraffic.has(key)) { this.seenTraffic.add(key); this.log('searcher', `Tripwire blocked ${b.clientId}: ${b.reason}.`); }
+    }
+    for (const o of traffic?.overloads ?? []) {
+      const key = `overload:${o.tick}`;
+      if (!this.seenTraffic.has(key)) { this.seenTraffic.add(key); this.log('searcher', `Overload paused the system: ${o.reason}.`); }
+    }
+  }
+  /** Lab reset or mode switch: numbers start over, learnings carry into the next run. */
+  startNewRun() {
+    this.runNumber += 1; this.fixes = []; this.seenTraffic = new Set();
   }
   /** Simulator runs advance one step per tick; settle once the run has finished. */
   settleAttack() {
@@ -134,13 +196,15 @@ export class Runtime {
     result.ai = {available:this.container,detail:this.aiDetail,runs:structuredClone(this.runs)};
     result.attackHistory = structuredClone(this.attackHistory);
     result.botScore = structuredClone(this.botScore);
+    result.performance = performanceReport({ attackHistory: this.attackHistory, fixes: this.fixes, botScore: this.botScore, autoBlocked: (result.traffic?.autoBlocks ?? []).map(b => b.clientId) });
+    result.learningLogs = structuredClone(this.logs.slice(0, 40));
     return result;
   }
   async tick() {
     // Do not start a new read while an operation owns the state. A read already
     // underway is awaited by locked(), so it cannot overwrite a newer mutation.
     if (this.busy) return;
-    if (this.mode === 'simulation') { this.simulation.tick(); this.settleAttack(); }
+    if (this.mode === 'simulation') { this.simulation.tick(); this.settleAttack(); this.logTraffic(); this.refreshFixes(); }
     else {
       try { await this.sync(); }
       catch { this.detail = 'Lab telemetry disconnected. Last observed state retained; no synthetic replacement.'; }
@@ -170,7 +234,9 @@ export class Runtime {
       } else if (this.mode === 'lab') {
         this.ingest(await this.executor('/running',{running:false}));
       }
+      const changed = this.mode !== mode;
       this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
+      if (changed) this.startNewRun();
     });
   }
   async runScenario(id) {
@@ -189,6 +255,14 @@ export class Runtime {
         const remote = await this.executor('/policy',{key:rec.policyKey});
         this.real.applyRecommendation(id); this.ingest(remote);
       }
+      // Ledger entry: the fix counts as held only once a replay is blocked.
+      const state = this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot();
+      const applied = state.recommendations.find(r => r.id === id);
+      if (applied?.applied && !this.fixes.some(f => f.policyKey === applied.policyKey && f.appliedTick === applied.appliedTick)) {
+        this.fixes = this.fixes.filter(f => f.policyKey !== applied.policyKey);
+        this.fixes.push({ policyKey: applied.policyKey, title: applied.title, appliedTick: applied.appliedTick ?? state.tick });
+        this.log('builder', `Applied: ${applied.title}.`);
+      }
     });
   }
   async setRunning(running) {
@@ -203,7 +277,7 @@ export class Runtime {
       // Reset lab leaves the environment paused so the admin starts traffic deliberately.
       if (this.mode==='simulation') { this.simulation.reset(); this.simulation.setRunning(false); }
       else { this.ingest(await this.executor('/reset',{})); this.ingest(await this.executor('/running',{running:false})); }
-      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null;
+      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null; this.startNewRun();
     });
   }
   async updateNode(id, status, action) {
@@ -236,6 +310,9 @@ export class Runtime {
         missed: bots.filter(b => !suspects.has(b.clientId)).map(b => b.clientId),
         falseAlarms: [...suspects].filter(id => !botIds.has(id)),
       };
+      const { caught, missed, falseAlarms } = this.botScore;
+      const behavior = id => bots.find(b => b.clientId === id)?.behavior;
+      this.log('searcher', `Bot reveal: AI flagged ${caught.length} of ${bots.length}${missed.length ? `; missed ${missed.map(id => `${id} (${behavior(id)})`).join(', ')}` : ''}${falseAlarms.length ? `; ${falseAlarms.length} false alarm${falseAlarms.length === 1 ? '' : 's'}` : ''}.`);
     });
   }
   async unblockClient(clientId) {
@@ -262,6 +339,18 @@ export class Runtime {
         catch { result=await runAgent(agent,context); result.reason='Agent service unavailable; deterministic fallback used.'; }
       } else result=await runAgent(agent,context);
       this.runs.unshift({...result,time:new Date().toISOString()});this.runs=this.runs.slice(0,12);
+      if (agent === 'searcher') {
+        // Attack runs whose events the Searcher cited count as flagged.
+        const cited = new Set(result.evidenceIds);
+        for (const h of this.attackHistory) if (!h.flagged && (h.eventIds ?? []).some(id => cited.has(id))) h.flagged = true;
+        const origins = ['internal', 'external'].map(o => [o, (result.labels ?? []).filter(l => l.origin === o).length]).filter(([, n]) => n).map(([o, n]) => `${n} ${o}`).join(', ');
+        const n = result.suspects?.length ?? 0, m = result.evidenceIds.length;
+        this.log('searcher', `Flagged ${n} suspect client${n === 1 ? '' : 's'} and ${m} event${m === 1 ? '' : 's'}${origins ? ` (${origins})` : ''}.`);
+      }
+      if (agent === 'builder' && result.recommendationIds.length) {
+        const recs = (this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot()).recommendations;
+        this.log('builder', `Recommended first: ${recs.find(r => r.id === result.recommendationIds[0])?.title ?? result.recommendationIds[0]}.`);
+      }
       this.aiDetail = result.mode!=='model' ? `${agent}: rule fallback. ${result.reason || 'Start the agent containers and add the Anthropic key.'}`
         : result.servedBy && result.servedBy!==result.model ? `${agent}: answered by ${result.servedBy} (${result.model} declined; server-side fallback).`
         : `${agent}: answered by ${result.model}.`;

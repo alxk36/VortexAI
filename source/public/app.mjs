@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVersion = 0;
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
-let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', dialogNode = '';
+let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
 const mode = () => state?.runtime?.mode || 'simulation';
 const serviceNodeIds = new Set(['gateway','lb','app','storage','iam','db']);
@@ -114,6 +114,7 @@ function update(next) {
     return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
+  renderPerformance();
   const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>aiRunMarkup(run)).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   const historyMarkup=attackHistoryMarkup(state.attackHistory);
@@ -132,6 +133,25 @@ function originFor(ids) {
     if (label) return label.origin;
   }
   return null;
+}
+
+// Agent performance: verdict and one line per agent, measured from this lab run.
+const VERDICT_LABEL = {idle:'No data', 'at-risk':'At risk', defended:'Defended', failing:'Failing'};
+function performanceMarkup(perf, logs) {
+  const status = Object.hasOwn(VERDICT_LABEL, perf.verdict.status) ? perf.verdict.status : 'idle';
+  const first = line => String(line).split(' · ')[0];
+  const summary = `<span class="verdict ${status}">${VERDICT_LABEL[status]}</span> <span class="perf-glance">${escape(first(perf.lines.attacker))} · ${escape(first(perf.lines.searcher))} · ${escape(first(perf.lines.builder))}</span>`;
+  const rows = ['attacker', 'searcher', 'builder'].map(agent => `<div class="perf-row"><strong>${agent[0].toUpperCase() + agent.slice(1)}</strong><span>${escape(perf.lines[agent])}</span><small>${escape(perf.definitions[agent])}</small></div>`).join('');
+  const entries = (logs || []).slice(0, 12).map(l => `<li><span class="log-agent ${['attacker', 'searcher', 'builder'].includes(l.agent) ? l.agent : ''}">${escape(l.agent)}</span>Run ${escape(l.run)} · tick ${escape(l.tick)}: ${escape(l.text)}</li>`).join('');
+  const body = `<p class="verdict-text ${status}">${escape(perf.verdict.text)}</p>${rows}<h4>Learning logs</h4>${entries ? `<ul class="learning-logs">${entries}</ul>` : '<p class="muted small">Agents log what they learn as attacks, fixes and reveals happen.</p>'}`;
+  return { summary, body };
+}
+// End agent performance.
+function renderPerformance() {
+  if (!state.performance) return;
+  const { summary, body } = performanceMarkup(state.performance, state.learningLogs);
+  if (summary !== lastPerfSummary) { $('performance-summary').innerHTML = summary; lastPerfSummary = summary; }
+  if (body !== lastPerfBody) { $('performance-body').innerHTML = body; lastPerfBody = body; }
 }
 
 // AI run card: a one-line headline and the key facts; the full reasoning sits under Details.
