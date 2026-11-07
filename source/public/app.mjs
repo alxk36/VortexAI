@@ -105,9 +105,21 @@ function update(next) {
     return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p>${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
-  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
+  const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>`<article class="ai-run"><div><strong>${escape(run.agent)}</strong><span class="small-tag">${run.mode==='model'?'MODEL':run.mode==='error'?'ERROR':'FALLBACK'}</span></div><p>${escape(run.summary)}</p>${(run.labels||[]).length?`<p class="origin-list">${run.labels.map(l=>`${originTag(l.origin)}<span class="evidence">${escape(l.id)}</span>`).join(' ')}</p>`:''}${run.reason?`<p class="muted">${escape(run.reason)}</p>`:''}${run.model?`<small>${escape(run.provider)} · ${escape(run.servedBy&&run.servedBy!==run.model?`${run.servedBy} (fallback after ${run.model} declined)`:run.model)}</small>`:''}</article>`).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   renderFindings(); renderEvents(); renderControls(); inspectResource();
+}
+
+// Internal vs external comes from the newest AI run that labeled this item:
+// the Builder labels recommendations, the Searcher labels evidence events.
+const ORIGIN_TEXT = {internal:'Internal · team mistake', external:'External · outside attack'};
+const originTag = origin => ORIGIN_TEXT[origin] ? `<span class="origin-tag ${origin}">${ORIGIN_TEXT[origin]}</span>` : '';
+function originFor(ids) {
+  for (const run of state.ai?.runs || []) {
+    const label = (run.labels || []).find(l => ids.includes(l.id));
+    if (label) return label.origin;
+  }
+  return null;
 }
 
 function renderFindings() {
@@ -115,7 +127,7 @@ function renderFindings() {
   const markup = state.findings.map(f => {
     const r = state.recommendations.find(rec=>rec.id === f.recommendationId);
     const evidence = f.evidenceDetails || f.evidence.map(id=>state.events.find(e=>e.id===id)).filter(Boolean);
-    return `<article class="finding ${escape(f.status)}"><div class="finding-top"><span>${escape(f.severity)}</span><span>${f.status === 'resolved' ? 'POLICY APPLIED' : 'OPEN FINDING'}</span></div><h4>${escape(f.title)}</h4><details><summary>${f.evidence.length} evidence event${f.evidence.length===1?'':'s'}</summary>${evidence.map(e=>`<p><span class="evidence">${escape(e.id)}</span> · ${escape(e.action)} → ${escape(e.outcome)}<br>${escape(e.detail)}</p>`).join('')}</details>${r ? `<p><strong>Builder: ${escape(r.title)}</strong></p><p>${escape(r.description)}</p><details><summary>Review tradeoff</summary><p>${escape(r.tradeoff)}</p></details>${r.applied ? `<p class="validation">${r.validation==='blocked-replay' ? '✓ Verified: replay blocked by the new policy.' : 'Policy applied. Run the same scenario to verify it.'}</p>` : `<button data-recommendation="${escape(r.id)}">Approve & apply in lab</button>`}` : ''}</article>`;
+    return `<article class="finding ${escape(f.status)}"><div class="finding-top"><span>${escape(f.severity)}</span><span>${f.status === 'resolved' ? 'POLICY APPLIED' : 'OPEN FINDING'}</span></div><h4>${escape(f.title)}</h4>${originTag(originFor([f.recommendationId, ...f.evidence]))}<details><summary>${f.evidence.length} evidence event${f.evidence.length===1?'':'s'}</summary>${evidence.map(e=>`<p><span class="evidence">${escape(e.id)}</span> · ${escape(e.action)} → ${escape(e.outcome)}<br>${escape(e.detail)}</p>`).join('')}</details>${r ? `<p><strong>Builder: ${escape(r.title)}</strong></p><p>${escape(r.description)}</p><details><summary>Review tradeoff</summary><p>${escape(r.tradeoff)}</p></details>${r.applied ? `<p class="validation">${r.validation==='blocked-replay' ? '✓ Verified: replay blocked by the new policy.' : 'Policy applied. Run the same scenario to verify it.'}</p>` : `<button data-recommendation="${escape(r.id)}">Approve & apply in lab</button>`}` : ''}</article>`;
   }).join('') || '<div class="empty-state">No findings yet.<br><span>Launch a scenario to begin the investigation.</span></div>';
   // Preserve expanded evidence and focus when unrelated traffic arrives.
   if (markup !== lastFindingMarkup) { $('findings').innerHTML = markup; lastFindingMarkup = markup; }

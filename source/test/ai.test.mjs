@@ -15,7 +15,7 @@ const snapshot = {
   recommendations: [{id:'rec-1',title:'Make storage private',description:'Deny anonymous access',tradeoff:'Private access needs identity',applied:false},{id:'rec-old',applied:true}],
   _ground_truth:[{secret:'never send me'}],apiKey:'top-secret',
 };
-const decision = { summary:'Review the public storage access.',scenarioId:null,evidenceIds:['event-1'],recommendationIds:[] };
+const decision = { summary:'Review the public storage access.',scenarioId:null,evidenceIds:['event-1'],recommendationIds:[],labels:[] };
 
 test('roles receive bounded, disjoint views without secrets or simulation truth',()=>{
   const attack = prepareContext('attacker',snapshot);

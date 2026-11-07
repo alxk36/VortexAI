@@ -24,7 +24,7 @@ export async function callBroker(agent, input, { token = process.env.AGENT_BROKE
     if (result.agent !== agent || !['model', 'fallback'].includes(result.mode) || result.provider !== 'anthropic' || result.model !== DEFAULT_MODEL) throw new Error('Invalid broker result.');
     const decision = validateDecision(agent, {
       summary: result.summary, scenarioId: result.scenarioId,
-      evidenceIds: result.evidenceIds, recommendationIds: result.recommendationIds,
+      evidenceIds: result.evidenceIds, recommendationIds: result.recommendationIds, labels: result.labels,
     }, context);
     const servedBy = result.mode === 'model' ? servedModel(result.servedBy) : undefined;
     return { agent, mode: result.mode, provider: 'anthropic', model: DEFAULT_MODEL, ...decision,

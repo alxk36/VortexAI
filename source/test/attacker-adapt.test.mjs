@@ -95,7 +95,7 @@ test('history reaches the model request, and reset clears it', async () => {
   let sent;
   await inferClaude('attacker', runtime.snapshot(), { apiKey: 'test-only', fetchImpl: async (_url, options) => {
     sent = JSON.parse(JSON.parse(options.body).messages[0].content);
-    return Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ summary: 'Try credentials next.', scenarioId: 'credential-abuse', evidenceIds: [], recommendationIds: [] }) }] });
+    return Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ summary: 'Try credentials next.', scenarioId: 'credential-abuse', evidenceIds: [], recommendationIds: [], labels: [] }) }] });
   } });
   assert.deepEqual(sent.history, [{ scenarioId: 'exposed-storage', result: 'succeeded' }]);
   await runtime.reset();
