@@ -29,11 +29,15 @@ export class LabExecutor {
     return structuredClone({generation:this.generation,tick:this.tickCount,events:this.events,policies:this.policies,nodeSettings:this.nodeSettings,running:this.running,activeScenario:this.activeScenario,metrics:this.metrics,containmentVerified:this.isContained()});
   }
   checkContainment() { if (!this.isContained()) throw new Error('Run npm run lab:verify before starting lab traffic.'); }
+  // Serialize scenarios, policy changes, and baseline traffic to preserve which
+  // configuration produced each observation; always release the lock on failure.
   async exclusive(action) {
     if(this.busy) throw new Error('A lab operation is in progress. Wait for it to finish.');
     this.busy=true;
     try{return await action();}finally{this.busy=false;}
   }
+  // Export bounded scalar telemetry only, never target response bodies or tokens.
+  // Generation-prefixed IDs prevent resets from colliding with earlier evidence.
   record(result,kind) {
     const observed=result.body?.events;
     if(!Array.isArray(observed) || observed.length>24) throw new Error('Invalid telemetry response from lab service.');
@@ -56,6 +60,8 @@ export class LabExecutor {
     const result=await this.call(service,options);
     this.record(result,kind);return result;
   }
+  // Ordinary app traffic is separate from scenario traffic and requires the
+  // same live containment gate. It is skipped while a scenario owns the lock.
   async normalTick() {
     if(!this.running || this.busy || !this.isContained())return this.snapshot();
     return this.exclusive(async()=>{
@@ -91,6 +97,7 @@ export class LabExecutor {
       return this.snapshot();
     });
   }
+  // Update the local policy mirror only after the target acknowledges success.
   async applyPolicy(key) {
     if(!Object.hasOwn(POLICY_ROLES,key))throw new Error('Unsupported policy.');
     this.checkContainment();
@@ -109,6 +116,8 @@ export class LabExecutor {
       this.nodeSettings[id]={status,action};return this.snapshot();
     });
   }
+  // Reset all targets before discarding telemetry. A partial failure is reported
+  // rather than claiming the whole lab returned to its initial configuration.
   async reset() {
     this.checkContainment();
     return this.exclusive(async()=>{

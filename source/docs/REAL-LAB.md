@@ -2,13 +2,13 @@
 
 This stage adds a disposable Docker lab to the existing in-memory simulation. Its six target services handle actual HTTP requests; the database and object-store services execute fixed queries against fabricated SQLite data. Three separate agent containers use a restricted model broker for Claude Opus 5.5. The dashboard can switch between synthetic traffic and real service observations.
 
-This is a purpose-built teaching cloud, not AWS/Azure/GCP, a general exploit environment, or packet capture. Only the three implemented scenarios can run. No model output is executed as code.
+This is a purpose-built teaching cloud, not AWS/Azure/GCP, a general exploit environment, or packet capture. Real-service mode runs only the three implemented scenarios. Simulation mode additionally supports validated action chains, users/bots, scoring, and overload controls; see the [current README](../../README.md). No model output is executed as code.
 
 ## Start the lab
 
 Use Node.js 24 for the full local test suite and management commands. The container image also uses Node 24. On Windows, install and start Docker Desktop with its Linux-container/WSL 2 backend. Docker Engine **28 or newer** and the Compose plugin are required; the verifier rejects older engines because this topology uses isolated bridge gateways.
 
-From the project folder:
+From `source/` (run `cd source` first if you are at the repository root):
 
 ```sh
 npm run lab:setup
@@ -22,7 +22,7 @@ ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY
 ANTHROPIC_MODEL=claude-opus-5-5
 ```
 
-Leave `ANTHROPIC_API_KEY` empty to use the explicitly labeled deterministic fallback. No API key has been supplied with this implementation, so a live model response must still be verified with your account. Never put the key into a chat, browser field, screenshot, or committed file. `.env` is ignored by Git and excluded from the image build context; only the `model-broker` service receives the provider credential.
+Leave `ANTHROPIC_API_KEY` empty to use the explicitly labeled deterministic fallback. Verify a live model response with your own account. Never put the key into a chat, browser field, screenshot, or committed file. `source/.env` is ignored by Git and excluded from the image build context; only the `model-broker` service receives the provider credential.
 
 Stop an existing `npm start` process first so port 4173 is free, then run:
 
@@ -109,12 +109,12 @@ The executor records handled HTTP observations and their returned status. The da
 
 ## How the three AI agents work
 
-The configured model is **Claude Opus 5.5**, API ID `claude-opus-5-5`, as listed in the [official model documentation](https://platform.claude.com/docs/en/models/opus-5-5/overview). This implementation deliberately accepts that exact model ID. It does not silently substitute another model.
+The requested model is `claude-opus-5-5`. Attacker requests opt into the provider fallback mechanism, and the dashboard identifies a different accepted serving model. This is separate from deterministic rule fallback. See the [AI guide](AI.md) for configured model IDs and response validation; provider access must be verified with the account used for the demo.
 
 | Role | Model input | Allowed output and effect |
 | --- | --- | --- |
 | Attacker | Public resource labels and the three legal scenario choices | A catalog scenario ID and explanation; the controller may execute that one bounded scenario |
-| Searcher | Three policy booleans and up to 40 sanitized event observations | An assessment citing supplied event IDs; no resource changes |
+| Searcher | Three policy booleans and up to 48 compressed observation entries from the feed and retained evidence | An assessment citing supplied event IDs; no resource changes |
 | Builder | Existing findings and unapplied recommendation options | An explanation and ordering of existing recommendation IDs; no automatic application |
 
 Each role is a separate worker. Workers do not call one another; the controller gathers state and dispatches individual requests. Only the broker holds the Anthropic key and calls the provider. It requests a JSON-schema response using `output_config.format`, following Anthropic's [structured-output interface](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Ordinary code then revalidates role permissions and all chosen IDs. JSON validity alone never grants authority.
@@ -148,7 +148,7 @@ In the simulator, paused or quarantined nodes stop modeled traffic, and Observe 
 
 ## Relationship to the prompts
 
-All four documents under `prompts/` were read as the team's design reference. Their independent-agent roles, restricted attacker view, evidence references, fixed remediation menu, explicit fallback, and administrator approval are carried into this implementation. The newer request for real contained services and Claude Opus 5.5 supersedes their earlier simulation-only/OpenAI choices.
+The historical documents under [Document/prompts/](../../Document/prompts/) supplied the team's design reference. Their independent-agent roles, restricted attacker view, evidence references, fixed remediation menu, explicit fallback, and administrator approval are carried into this implementation; the current build also includes a contained service lab and model-assisted decisions.
 
 This stage extends the existing Node dashboard instead of replacing it with the prompt documents' proposed Python/FastAPI/Pydantic and React stack. `GET /api/findings` provides a canonical adapter with the shared finding fields (`source`, `origin`, `category`, `technique`, `resource_id`, `env_id`, `evidence`, `exploited`, `detected`, and `attack_run_id`) alongside the existing UI fields. This is not a complete implementation of the proposed environment/campaign/diagnosis schemas or route list.
 
@@ -160,8 +160,8 @@ Tokens and the optional provider key stay in local `.env`; model credentials are
 
 Run `npm test` for the automated suite. It exercises scenario/fix/replay behavior, real service handlers with injected transports, model-response validation/fallback, HTTP boundaries, projection math, and verification-rule logic. These tests do not substitute for Docker's live network checks or a real provider request.
 
-Verified on this computer on November 7, 2026: Docker Desktop is installed, Engine 29.9.2 is running, all 12 containers are healthy, and live containment checks passed for all 10 confined roles. All 102 automated tests passed, including the updated orbit, box selection, group movement, and shared editor behaviors. The real-service smoke check exercised each of the three scenarios through observed HTTP evidence, an acknowledged policy fix, and a blocked replay. It also verified real node pause/observe/restore controls and contacted all three independent agent workers. The containment checks were repeated successfully after the dashboard interaction update.
+Historical verification recorded earlier on November 7, 2026: Docker Engine 29.9.2, all 12 containers healthy, containment checks passing for all 10 confined roles, and 102 automated tests passing at that earlier revision. The recorded smoke check covered the three attack/fix/replay paths, node controls, and worker connectivity. These are historical observations, not a statement about the current machine or later revisions. The subsequent repository review passed 158 automated tests; see the [README](../../README.md#tests-and-verification) for current test scope.
 
-The generated `.env` has no Anthropic API key. Each agent worker correctly returned **FALLBACK**; no paid model inference has been verified. After adding your key locally, run `npm run lab:up` and request an agent action. A **MODEL** result confirms successful provider access for that request. Rerun containment verification after runtime or network changes; these recorded checks describe the tested deployment, not a permanent guarantee against arbitrary code or container escapes.
+The earlier recorded live check used no Anthropic key and returned **FALLBACK**, so it did not verify paid inference. This documentation update does not inspect local keys or revalidate live provider access. After configuring `source/.env` locally, run `npm run lab:up` and request an agent action. A **MODEL** result confirms a validated provider result for that request. Rerun containment verification after runtime or network changes; historical checks are not a permanent guarantee against arbitrary code or container escapes.
 
 If startup fails, check Docker Desktop's Linux engine, Engine version, port 4173 conflicts, and conflicts with the three configured `172.30.40.0/24`–`172.30.42.0/24` lab subnets. The control network reserves `172.30.40.3` for the executor and allocates other containers from `172.30.40.128/25`. If changing subnet wiring is necessary, update both Compose and the verifier together and rerun verification; do not weaken the expected-network checks.

@@ -1,3 +1,7 @@
+/** Coordinate browser commands without letting the UI or AI own security state.
+ * Simulation is local; lab mode ingests executor observations into the same
+ * detectors. Operation locks keep asynchronous reads from undoing newer writes.
+ */
 import { Simulation } from './simulation.mjs';
 import { prepareContext, runAgent, validateDecision, servedModel, DEFAULT_MODEL } from '../ai/agents.mjs';
 
@@ -83,6 +87,8 @@ export class Runtime {
     if (!ACTION_PATHS.has(path)) throw new Error('Unsupported executor operation.');
     return internalJson(EXECUTOR + path, this.executorToken, body, this.fetch);
   }
+  // A new executor generation invalidates old evidence IDs and replay proof.
+  // Reuse the detectors, but never generate synthetic traffic for real services.
   ingest(remote) {
     if (!remote || !Array.isArray(remote.events) || !remote.policies) throw new Error('Invalid lab telemetry.');
     if (remote.generation !== this.generation) {
@@ -109,6 +115,8 @@ export class Runtime {
     })();
     return this.syncPromise;
   }
+  // Present one UI contract for both modes, stripping capabilities that the
+  // real executor cannot perform (such as model-composed attack chains).
   snapshot() {
     const result = this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot();
     if (this.mode === 'lab') {
@@ -168,6 +176,7 @@ export class Runtime {
   async runScenario(id) {
     return this.locked(async()=>{ await this.launch(id, 'admin'); });
   }
+  // An approval is recorded only after the chosen environment accepts the fix.
   async applyRecommendation(id) {
     return this.locked(async()=>{
       if (this.mode === 'simulation') this.simulation.applyRecommendation(id);
@@ -233,6 +242,8 @@ export class Runtime {
     this.simulatorOnly();
     return this.locked(async()=>{ this.simulation.unblockClient(clientId); });
   }
+  // Take one bounded context, validate the worker response again, and retain
+  // explicit model/fallback provenance. Only Attacker decisions launch actions.
   async runAI(agent) {
     if (!ROLES.includes(agent)) throw new Error('Unknown agent.');
     return this.locked(async()=>{
@@ -251,10 +262,18 @@ export class Runtime {
         catch { result=await runAgent(agent,context); result.reason='Agent service unavailable; deterministic fallback used.'; }
       } else result=await runAgent(agent,context);
       this.runs.unshift({...result,time:new Date().toISOString()});this.runs=this.runs.slice(0,12);
+<<<<<<< HEAD
       this.aiDetail = result.mode!=='model' ? `${agent}: rule fallback. ${result.reason || 'Start the agent containers and add the Anthropic key.'}`
         : result.servedBy && result.servedBy!==result.model ? `${agent}: answered by ${result.servedBy} (${result.model} declined; server-side fallback).`
         : `${agent}: answered by ${result.model}.`;
       // Only the allowlisted scenario choice is executable. Searcher/Builder stay read-only.
+=======
+      this.aiDetail = result.mode!=='model' ? `${agent}: fallback used. ${result.reason || 'Configure the Anthropic key and start the agent containers.'}`
+        : result.servedBy && result.servedBy!==result.model ? `${result.servedBy}: ${agent} completed a validated response after ${result.model} declined (Anthropic server-side fallback).`
+        : `${result.model}: ${agent} completed a validated response.`;
+      // Only validated scenario/catalog choices execute. Simulation also accepts
+      // validated chains; Searcher and Builder decisions remain advisory.
+>>>>>>> 79c9fa8 (README.md Update)
       if (agent==='attacker' && result.plan?.length) await this.launchPlan(result.plan, 'ai');
       else if (agent==='attacker' && result.scenarioId) {
         const catalog=this.simulation.snapshot().scenarios;

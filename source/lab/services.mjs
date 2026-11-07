@@ -5,6 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { authorized, createJsonServer, createLabTransport, requireContainer, strictObject, tokenMatches } from './http.mjs';
 
 export const ROLES = ['gateway','lb','app','storage','iam','db'];
+// Public fixture credentials intentionally exercise weak demo paths. Real
+// service/control tokens are generated separately and supplied via environment.
 export const DEMO_PASSWORD = 'vortex-disposable-demo-password';
 export const DEMO_APP_TOKEN = 'vortex-disposable-app-user';
 const POLICY_ROLES = {storagePrivate:'storage', requireMfa:'iam', databaseLeastPrivilege:'db'};
@@ -23,6 +25,8 @@ export function createService({role, controlToken, appToken, call=createLabTrans
   const sessions = new Map();
   let hardened = false;
   let nodeSettings = {status:'active',action:'normal'};
+  // Reset restores fabricated rows, clears sessions, and removes hardening so
+  // the same attack/fix/replay experiment can be repeated from a known baseline.
   const seed = () => {
     if (role === 'db') {
       db.exec('CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, name TEXT, segment TEXT); DELETE FROM customers;');
@@ -42,6 +46,8 @@ export function createService({role, controlToken, appToken, call=createLabTrans
   async function handle({method='GET',path,headers={},body={}}) {
     headers = Object.fromEntries(Object.entries(headers).map(([k,v])=>[k.toLowerCase(),v]));
     if (method === 'GET' && path === '/health') return STATUS(200,{role,ready:true,...nodeSettings});
+    // Management routes remain reachable when admission is paused/quarantined,
+    // but require the separate control token before any state change.
     if (['/control/policy','/control/reset','/control/node'].includes(path)) {
       if (!authorized(headers,controlToken)) return STATUS(403,{error:'Control authorization required.'});
       if (method !== 'POST') return STATUS(405,{error:'POST required.'});
@@ -58,6 +64,8 @@ export function createService({role, controlToken, appToken, call=createLabTrans
       hardened=true; return STATUS(200,{key:body.key,value:true});
     }
     const source=sourceFor(headers);
+    // Preserve downstream traces while adding this service's observed result;
+    // the executor later removes bodies and assigns global event identifiers.
     const trace=(status,action,detail,fields={},data={})=>{
       const result=STATUS(status,data);
       const event={source,target:role,protocol:'HTTP',action,outcome:status<400?'allowed':'denied',httpStatus:status,bytes:Buffer.byteLength(JSON.stringify(data)),detail:nodeSettings.action==='observe'?`${detail} Observation mode: request explicitly monitored.`:detail,authenticated:false,principal:'anonymous',...fields};
@@ -110,6 +118,8 @@ export function createService({role, controlToken, appToken, call=createLabTrans
     if (role==='iam' && method==='POST' && path==='/login') {
       if (!strictObject(body,['username','password','secondFactor']) || typeof body.username!=='string' || typeof body.password!=='string') return STATUS(400,{error:'Invalid login fields.'});
       const passwordValid=body.username==='lab-admin' && body.password===DEMO_PASSWORD;
+      // A fixed teaching factor gates new sessions only; this is not real MFA
+      // enrollment, and enabling it does not revoke already-issued sessions.
       const accepted=passwordValid && (!hardened || body.secondFactor==='246810');
       let session;
       if (accepted) {

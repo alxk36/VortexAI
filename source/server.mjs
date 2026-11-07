@@ -1,3 +1,7 @@
+/** Dashboard entry point: serve local assets and validate named runtime commands.
+ * Runtime owns environment/agent state; this module owns HTTP and timer lifetimes.
+ * Importing createServer is safe for tests and does not start a listener.
+ */
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -188,7 +192,8 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
   return server;
 }
 
-// CLI usage binds to loopback unconditionally, even when a HOST variable exists.
+// Local CLI usage binds to loopback; Compose uses a container listener whose
+// only published host binding is loopback. A HOST environment variable is unused.
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isDirectRun) {
   const port = Number(process.env.PORT ?? 4173);

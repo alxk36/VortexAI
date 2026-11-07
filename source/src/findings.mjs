@@ -6,6 +6,8 @@ const TAXONOMY = {
   requireMfa:{technique:'password_spray',category:1},
   databaseLeastPrivilege:{technique:'overpermissive_iam',category:2},
 };
+// Build an export view without changing dashboard findings. Attacker attempts
+// come from the rolling feed; retained Searcher evidence may outlive that feed.
 export function sharedFindings(snapshot,envId='local-lab') {
   const searcher=snapshot.findings.map(f=>({
     id:f.id,source:'searcher',origin:'internal',...TAXONOMY[f.policyKey],resource_id:f.nodeId,env_id:envId,

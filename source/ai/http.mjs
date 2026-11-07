@@ -1,5 +1,7 @@
+// Shared agent/broker HTTP boundary: token authentication and bounded JSON only.
 import { timingSafeEqual } from 'node:crypto';
 
+// Compare equal-length buffers in constant time; missing/short tokens fail closed.
 export function authorized(request, token) {
   if (typeof token !== 'string' || token.length < 24) return false;
   const supplied = Buffer.from(request.headers.authorization || '');
@@ -12,6 +14,8 @@ export function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+// Reject excess bytes before parsing, then reject arrays and unexpected fields.
+// Role-specific validation happens after this transport-level shape check.
 export async function readBody(request, allowedKeys, limit = 32768) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] || '')) throw new Error('JSON required.');
   let size = 0; const chunks = [];

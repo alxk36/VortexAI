@@ -45,6 +45,8 @@ export class TrafficModel {
     this.joined = { tick: -1, count: 0 };
   }
 
+  // A settings change starts a fresh population, then schedules only the added
+  // users as a one-tick arrival burst. Steady load remains capped separately.
   configure({ users, bots }) {
     if (!Number.isInteger(users) || users < 1 || users > MAX_USERS) throw new Error(`users must be a whole number from 1 to ${MAX_USERS}.`);
     if (typeof bots !== 'boolean') throw new Error('bots must be true or false.');
@@ -98,6 +100,8 @@ export class TrafficModel {
     }
   }
 
+  // Apply client/service admission before emitting; hide ground-truth bot labels
+  // so Searcher decisions must be based on the resulting behavioral evidence.
   _botEvent(sim, bot, fields) {
     const paused = ['paused'].includes(sim._nodeSettings[fields.target]?.status) || sim._nodeSettings[fields.target]?.action === 'quarantine';
     const blocked = this.isBlocked(bot.clientId, sim._tick);
@@ -138,6 +142,7 @@ export class TrafficModel {
     if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Blocked ${event.clientId}${again}: ${reason}. Auto-expires in ${BLOCK_TICKS} ticks.` };
   }
 
+  // Pause the whole model, not just this client. Resume remains an admin action.
   _overload(sim, tick) {
     this.overloadedTick = tick;
     sim.running = false;
@@ -153,6 +158,7 @@ export class TrafficModel {
     if (entry) entry.liftedByAdmin = true;
   }
 
+  // Reveal ground truth to the administrator for scoring, not to agent context.
   reveal(tick) {
     this.revealed = { tick, bots: this.bots.map(b => ({ clientId: b.clientId, behavior: b.behavior })) };
     return structuredClone(this.revealed);

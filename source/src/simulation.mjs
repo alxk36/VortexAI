@@ -1,7 +1,7 @@
 /**
- * VortexAI's entire cloud is a deterministic state machine. These objects are
- * virtual resources, never network endpoints: this module does not import any
- * network, process, filesystem, shell, or cloud-provider capability.
+ * VortexAI's in-memory cloud is a state machine with fixed scenario outcomes
+ * and injectable randomness for background users/bots. These resources are not
+ * network endpoints; this module has no network, process, or filesystem access.
  */
 const NODES = [
   { id: 'client', label: 'Users', type: 'client', zone: 'Internet', x: -4, y: 0, z: -1.7, description: 'Legitimate users send synthetic HTTPS requests to the cloud edge.' },
@@ -30,6 +30,7 @@ const SCENARIOS = [
   { id: 'lateral-movement', name: 'Lateral movement', description: 'Assumes a stolen low-privilege application token. An overpowered service role enables a database export; least privilege blocks it.', steps: 4 },
 ];
 
+// The Builder can explain/order this fixed menu; it cannot invent a policy key.
 const REMEDIATIONS = {
   storagePrivate: {
     title: 'Make object storage private',
@@ -114,7 +115,8 @@ export class Simulation {
     return this.snapshot();
   }
 
-  /** Return defensive copies so API clients cannot mutate the environment. */
+  /** Clone externally visible state so callers cannot mutate policies, queues,
+   * or retained evidence by modifying a response object. */
   snapshot() {
     return clone({
       running: this.running,
@@ -153,7 +155,9 @@ export class Simulation {
     return this.snapshot();
   }
 
-  /** Each tick produces one normal request chain plus at most one attack step. */
+  /** Advance normal/background traffic and at most one scenario step per tick.
+   * Pausing freezes model time, including attack progress and timed blocks,
+   * rather than merely stopping the animation. */
   tick() {
     if (!this.running) return this.snapshot();
     this._tick += 1;
@@ -208,6 +212,8 @@ export class Simulation {
   }
 
   /** The Builder never applies its own recommendation: only this admin action can. */
+  // Apply only a proposed catalog remedy between scenarios. Replay validation
+  // is separate: _observe must later see a denial caused by that control.
   applyRecommendation(id) {
     const recommendation = this._recommendations.find(item => item.id === id);
     if (!recommendation) throw new Error('Unknown recommendation. Run a scenario to collect evidence first.');
@@ -328,6 +334,8 @@ export class Simulation {
     }
   }
 
+  // All synthetic observations pass through this path so metrics, bounded
+  // history, evidence rules, and per-client traffic accounting stay consistent.
   _emit(fields) {
     const event = { id: `event-${++this._sequence}`, tick: this._tick, time: timeAt(this._tick), ...fields };
     if ([fields.source,fields.target].some(id=>this._nodeSettings[id]?.action==='observe')) event.detail += ' [Enhanced observation enabled for this node.]';
@@ -342,6 +350,8 @@ export class Simulation {
     if (event.clientId) this._traffic.observe(event, this);
   }
 
+  // Detect from observed actions/identity/outcomes, never presentation labels.
+  // Denials can validate an approved fix; only allowed violations open findings.
   _observe(event) {
     if (event.action === 'sign-in' && event.outcome === 'denied') {
       const key = `${event.source}:${event.principal}`;

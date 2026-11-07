@@ -26,6 +26,8 @@ export function nodesInRect(projectedNodes, start, end) {
   ).map(node=>node.id))];
 }
 
+// Rotate world coordinates into camera space, then apply the same perspective
+// used by screenToPlane. Depth is also returned for painter-order rendering.
 export function projectPoint(point, camera) {
   const {width, height, yaw, pitch, zoom, panX = 0, panY = 0} = camera;
   const rx = point.x * Math.cos(yaw) - point.z * Math.sin(yaw);

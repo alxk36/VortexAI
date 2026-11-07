@@ -1,3 +1,6 @@
+/** Fixed-destination provider adapter. Bound response size/time and validate the
+ * final decision before returning it; callers decide how to display fallback.
+ */
 import { DEFAULT_MODEL, DECISION_SCHEMA, SYSTEM_PROMPTS, prepareContext, servedModel, validateDecision } from './agents.mjs';
 
 export const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';

@@ -11,6 +11,7 @@ export function tokenMatches(actual, expected) {
 export function authorized(headers, token) {
   return tokenMatches(headers.authorization, `Bearer ${token}`) && token?.length >= 16;
 }
+// This checks allowed keys, not required fields; each handler validates values.
 export function strictObject(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
 }
@@ -24,6 +25,8 @@ export async function readJson(request) {
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
+// Adapt injectable service handlers to real HTTP while keeping errors generic.
+// Tests can call the same handlers directly without opening network sockets.
 export function createJsonServer(handler) {
   const server = http.createServer(async (req, res) => {
     try {
@@ -68,6 +71,8 @@ export function createLabTransport({fetchImpl=fetch}={}) {
   };
 }
 
+// Startup guard only. Actual isolation comes from Compose plus live verification,
+// not from trusting this environment variable as a security boundary.
 export function requireContainer() {
   if (process.env.VORTEX_CONTAINER !== '1') throw new Error('Real lab services must run through the isolated Docker Compose environment.');
 }

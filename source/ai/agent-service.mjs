@@ -1,3 +1,6 @@
+/** One role per container. Authenticate controller requests, sanitize context,
+ * and delegate inference to the broker without receiving a provider API key.
+ */
 import http from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,6 +40,8 @@ export async function callBroker(agent, input, { token = process.env.AGENT_BROKE
   }
 }
 
+// A busy worker rejects overlapping calls rather than queuing unbounded work.
+// The injected broker lets tests verify this boundary without paid inference.
 export function createAgentServer({ role = process.env.AGENT_ROLE, controlToken = process.env.AGENT_CONTROL_TOKEN, brokerToken = process.env.AGENT_BROKER_TOKEN, broker = callBroker } = {}) {
   assertRole(role); let busy = false;
   const server = http.createServer(async (request, response) => {

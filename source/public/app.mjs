@@ -1,4 +1,6 @@
 // The browser renders server-owned state and requests named, bounded lab operations.
+// Only camera/selection/layout are browser-owned. Polling, command handling,
+// panels, the node editor, and canvas gestures are organized in that order below.
 import {projectPoint, screenToPlane, clampTranslation, sanitizeLayout, orbitCamera, nodesInRect} from './grid-math.mjs';
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -25,6 +27,8 @@ async function request(path, body) {
   if (!response.ok) throw new Error(result.error || 'The lab could not complete that action.');
   return result;
 }
+// Hold UI controls while a mutation runs. The version counter invalidates any
+// older poll response that completes after the user has submitted a command.
 async function command(path, body, message) {
   if (busy) return;
   busy = true;
@@ -67,6 +71,8 @@ function renderControls() {
   });
 }
 
+// Reconcile a server snapshot without replacing browser-owned layout. Reset or
+// mode changes clear particles so old events are not animated in a new session.
 function update(next) {
   const first = !state;
   const nextMode = next.runtime?.mode || 'simulation';
@@ -200,6 +206,8 @@ function renderTraffic() {
   if (markup !== lastTrafficMarkup) { const [score, blocks] = [botScoreMarkup(state.botScore), overloadMarkup(traffic, state.running) + autoBlocksMarkup(traffic)]; $('bot-score').innerHTML = score; $('auto-blocks').innerHTML = blocks; lastTrafficMarkup = markup; }
 }
 
+// Escape all displayed content, including AI prose; a model result is data,
+// never trusted HTML or an instruction to change the application itself.
 function renderFindings() {
   $('finding-count').textContent = state.findings.length;
   const markup = state.findings.map(f => {
@@ -435,6 +443,7 @@ function drawNode(n) {
 }
 let drag, ctrlHeld=false, altHeld=false;
 function screenPoint(event) { const rect=canvas.getBoundingClientRect();return {x:event.clientX-rect.left,y:event.clientY-rect.top}; }
+// Hit-test in reverse draw order so overlapping nodes select the visible front one.
 function hitNode(event) { const p=screenPoint(event);return [...hitNodes].reverse().find(n=>Math.hypot(p.x-n.x,p.y-n.y)<n.r); }
 function setSelection(id,toggle=false) {
   if(toggle && selectedNodes.has(id)){selectedNodes.delete(id);selected=[...selectedNodes].at(-1)||'';}

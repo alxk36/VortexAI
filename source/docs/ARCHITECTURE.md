@@ -1,5 +1,7 @@
 # VortexAI: cloud security simulation
 
+> **Historical baseline:** This document describes the initial in-memory design. The Docker lab and model-assisted agents are now implemented, along with simulation-only attack chains, users/bots, scoring, and overload controls. Statements below that describe those features as future work refer to the earlier phase. Use the [current README](../../README.md), [AI guide](AI.md), and [service-lab guide](REAL-LAB.md) for current setup and behavior. Application commands run from `source/`.
+
 VortexAI is a provider-neutral model of a small cloud application. It generates normal traffic and bounded attack scenarios, shows their paths in a rotatable 3D view, detects suspicious observations, and proposes changes for an administrator to apply and retest.
 
 The current environment is an in-memory simulation. Its services, credentials, data, and attacks are JavaScript state and events. It does not provision cloud resources, capture packets, run exploit code, or create virtual machines. The three agents currently use explicit rules, rather than trained models or an external AI service.

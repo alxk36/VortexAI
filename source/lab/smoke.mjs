@@ -1,5 +1,7 @@
 // Run only via `docker compose exec -T dashboard node lab/smoke.mjs`.
 // Uses the real services and their fixed scenario catalog, never host targets.
+// This helper mutates/resets lab state and may call paid inference when a key is
+// configured. It is separate from node --test and is not a read-only health check.
 import assert from 'node:assert/strict';
 import {Runtime} from '../src/runtime.mjs';
 if(process.env.VORTEX_CONTAINER!=='1') throw new Error('Run this check inside the verified Docker dashboard.');

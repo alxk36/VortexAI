@@ -1,3 +1,6 @@
+// Prepare source/.env relative to this script, not the caller's working folder.
+// Existing nonempty values stay intact; missing control tokens get independent
+// random values. Provider keys are never generated or printed by this script.
 import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath} from 'node:url';

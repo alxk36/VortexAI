@@ -1,3 +1,6 @@
+// Host-side lifecycle wrapper used by package.json. Run every child command
+// from source/ and stop on the first failure; startup completes only after the
+// separate verifier approves the actual running lab topology.
 import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';

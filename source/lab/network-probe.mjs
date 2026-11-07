@@ -1,3 +1,7 @@
+/** Runs inside a confined Linux container during lab verification. Combine
+ * route inspection, a working internal connection, and fixed egress probes;
+ * connection failure alone is insufficient evidence of network containment.
+ */
 import { readFile } from 'node:fs/promises';
 import net from 'node:net';
 import dns from 'node:dns/promises';
@@ -22,6 +26,7 @@ export function checkRoutes(ipv4,ipv6,disableIpv6) {
   if(disableIpv6.trim()!=='1')throw new Error('IPv6 must be disabled in the confined namespace.');
 }
 
+// Always close the short-lived probe socket, including timeouts and errors.
 function canConnect(host,port) {
   return new Promise(resolveConnection=>{
     const socket=net.createConnection({host,port});

@@ -1,3 +1,6 @@
+/** Sole provider-key holder. Serialize inference behind authenticated requests;
+ * missing keys and invalid responses use the same explicit rule-fallback path.
+ */
 import http from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';

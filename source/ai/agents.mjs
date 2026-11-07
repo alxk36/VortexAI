@@ -138,6 +138,8 @@ export function prepareContext(agent, snapshot = {}) {
   };
 }
 
+// Provider-side shape constraints are only the first boundary. validateDecision
+// below also checks each role's authority and membership in the supplied catalog.
 export const DECISION_SCHEMA = Object.freeze({
   type: 'object', additionalProperties: false,
   properties: {
@@ -208,6 +210,8 @@ export function validateDecision(agent, value, context) {
     labels: labels.map(l => ({ id: l.id, origin: l.origin })), suspects: [...suspects], plan: [...plan] };
 }
 
+// Keep offline decisions useful and deterministic. This path uses observations
+// and catalog choices; it must never be presented as successful model inference.
 function fallbackDecision(agent, context) {
   const result = { summary: '', scenarioId: null, evidenceIds: [], recommendationIds: [], labels: [], suspects: [], plan: [] };
   if (agent === 'attacker') {

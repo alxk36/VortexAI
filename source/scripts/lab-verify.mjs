@@ -1,3 +1,7 @@
+/** Host-side gate for real-service traffic. Revoke the previous marker, inspect
+ * the exact container/network configuration, probe confined namespaces, and
+ * write a fresh marker only after every check passes. Never print inspected keys.
+ */
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
