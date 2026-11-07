@@ -33,7 +33,9 @@ test('roles receive bounded, disjoint views without secrets or simulation truth'
     assert.deepEqual(prepareContext(role,context),context,'boundary sanitization must be idempotent');
     assert.ok(!JSON.stringify(context).includes('secret'));assert.ok(!JSON.stringify(context).includes('_ground_truth'));
   }
-  assert.equal(prepareContext('searcher',{events:Array(100).fill(snapshot.events[0])}).events.length,40);
+  const distinct=Array.from({length:300},(_,i)=>({...snapshot.events[0],id:`event-${i}`,action:`action-${i}`}));
+  assert.equal(prepareContext('searcher',{events:distinct}).events.length,48,'searcher view stays bounded');
+  assert.equal(prepareContext('searcher',{events:Array(100).fill(snapshot.events[0])}).events.length,1,'duplicate event ids count once');
   assert.throws(()=>prepareContext('executor',snapshot));
 });
 
