@@ -142,6 +142,7 @@ attack as traffic between resources.
 
 **Stack:** Python 3.12+, FastAPI, Pydantic v2, pytest. Frontend: React 18 + Vite + TypeScript + TailwindCSS.
 **AI:** OpenAI API through the official `openai` Python SDK (team's OpenAI plan). Read the key from
-`OPENAI_API_KEY` and the model ID from `OPENAI_MODEL`; never hard-code either. All modules call the model
+`OPENAI_API_KEY` and the model ID from `OPENAI_MODEL` (default `gpt-6-astra`, GPT-6 Astra on Alex's plan);
+never hard-code either. Ship a `.env.example` with `OPENAI_MODEL=gpt-6-astra` and an empty `OPENAI_API_KEY=`. All modules call the model
 through one wrapper, `vortex/llm.py`. Every AI call needs a deterministic fallback so the demo works
 with no API key and survives a refusal or timeout.
