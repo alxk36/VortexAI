@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVersion = 0;
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
-let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', lastHackerMarkup = '', dialogNode = '';
+let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', lastHackerMarkup = '', lastTilesMarkup = '', lastProofBody = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
 const connectionsKey = mode => `vortexai.diagram-connections.v1.${mode || 'simulation'}`;
 let customConnections=[], pendingConnection='', connectionPointer=null;
@@ -109,7 +109,13 @@ function renderControls() {
   document.querySelectorAll('[data-ai]').forEach(button => { button.disabled = busy || Boolean(state?.activeScenario); });
   const trafficLocked = busy || !state || mode() !== 'simulation' || Boolean(state?.activeScenario);
   $('traffic-apply').disabled = trafficLocked;
-  $('bots-reveal').disabled = trafficLocked || !state?.traffic?.botsEnabled;
+  // Something to reveal: hidden bots, or addresses the Hacker used this run.
+  const hackerThisRun = (state?.hacker?.runs || []).some(r => r.run === state.runNumber && r.attempts);
+  $('bots-reveal').disabled = trafficLocked || !(state?.traffic?.botsEnabled || hackerThisRun);
+  const hackerOn = Boolean(state?.hacker?.enabled);
+  $('hacker-toggle').dataset.hacker = hackerOn ? 'stop' : 'start';
+  $('hacker-toggle').textContent = hackerOn ? 'Stop Hacker' : 'Start Hacker';
+  $('hacker-toggle').classList.toggle('on', hackerOn);
   document.querySelectorAll('[data-hacker]').forEach(button => { button.disabled = busy || !state || (mode() !== 'simulation' && button.dataset.hacker !== 'forget'); });
   document.querySelectorAll('[data-scenario]').forEach(button => {
     button.disabled = busy || Boolean(state?.activeScenario);
@@ -168,13 +174,16 @@ function update(next) {
   for (const [id,key] of [['total-events','totalEvents'],['attack-events','attackEvents'],['blocked-events','blockedEvents'],['open-findings','openFindings']]) $(id).textContent = state.metrics[key].toLocaleString();
   const agentsMarkup = ['attacker','searcher','builder'].map((key,i) => {
     const agent = state.agents[key];
-    return `<div class="agent ${key}"><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
+    return `<div class="agent ${key}"><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
   renderPerformance();
+  renderTiles();
   renderHacker();
   const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>aiRunMarkup(run)).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
+  const latestRun=(state.ai?.runs || [])[0];
+  $('agents-summary').innerHTML=`Agents and AI runs<span class="detail-peek">${escape(latestRun ? `${latestRun.agent}: ${headline(latestRun.summary)}` : (state.ai?.detail || ''))}</span>`;
   const historyMarkup=attackHistoryMarkup(state.attackHistory);
   if(historyMarkup!==lastHistoryMarkup){$('attack-history').innerHTML=historyMarkup;lastHistoryMarkup=historyMarkup;}
   renderTraffic();
@@ -233,10 +242,19 @@ function renderHacker() {
 }
 function renderPerformance() {
   if (!state.performance) return;
-  const { summary, body: report } = performanceMarkup(state.performance, state.learningLogs);
-  const body = report + proofMarkup(state.proof);
+  const { body } = performanceMarkup(state.performance, state.learningLogs);
+  const latestLog = (state.learningLogs || [])[0];
+  const summary = `Scoreboard and learning log<span class="detail-peek">${escape(latestLog ? `${latestLog.agent}: ${latestLog.text}` : 'Every agent line, with what each number means')}</span>`;
   if (summary !== lastPerfSummary) { $('performance-summary').innerHTML = summary; lastPerfSummary = summary; }
   if (body !== lastPerfBody) { $('performance-body').innerHTML = body; lastPerfBody = body; }
+  const proof = proofMarkup(state.proof);
+  const r = state.proof?.results;
+  $('proof-summary').innerHTML = `Proof<span class="detail-peek">${r?.hackerRun1 ? `Hacker ${escape(r.hackerRun1.successRate)}% vs random ${escape(r.randomRun1.successRate)}% got through` : 'Run npm run eval:hacker to measure'}</span>`;
+  if (proof !== lastProofBody) { $('proof-body').innerHTML = proof || '<p class="small muted">No measurement yet. Run npm run eval:hacker, then restart the dashboard.</p>'; lastProofBody = proof; }
+  // The verdict is the largest line on the page.
+  const status = Object.hasOwn(VERDICT_LABEL, state.performance.verdict.status) ? state.performance.verdict.status : 'idle';
+  $('verdict-line').textContent = state.performance.verdict.text;
+  $('verdict-line').className = `verdict-line ${status}`;
 }
 
 // AI run card: a one-line headline and the key facts; the full reasoning sits under Details.
@@ -294,17 +312,49 @@ function hackerMarkup(h) {
 }
 // End hacker.
 
+// Agent tiles: one large number per agent, a caption saying what it counts, and one detail line.
+function tileMarkup(key, name, number, caption, detail, status) {
+  return `<div class="agent-tile ${key}"><div class="tile-head"><span class="tile-name">${escape(name)}</span><span class="tile-status">${escape(status)}</span></div><div class="tile-number">${escape(number)}</div><div class="tile-caption">${escape(caption)}</div><div class="tile-detail" title="${escape(detail)}">${escape(detail)}</div></div>`;
+}
+function agentTilesMarkup(perf, agents, hacker) {
+  if (!perf) return '';
+  const { attacker: a, searcher: s, builder: b, hacker: h } = perf;
+  const status = key => agents?.[key]?.status ?? '';
+  const seen = s.attempts + (s.hacker?.attempts ?? 0);
+  const flagged = s.flagged + (s.hacker?.flagged ?? 0);
+  const bots = s.bots ? `${s.bots.caught} of ${s.bots.total} hidden bots${s.bots.falseAlarms ? `, ${s.bots.falseAlarms} false alarm${s.bots.falseAlarms === 1 ? '' : 's'}` : ''}` : 'reveal attackers to score bots';
+  const tiles = [
+    tileMarkup('attacker', 'Attacker', `${a.found}/${a.total}`, 'weak spots found', a.runs ? `${a.gotThrough} of ${a.runs} attack run${a.runs === 1 ? '' : 's'} got through` : 'no attack runs yet', status('attacker')),
+    tileMarkup('searcher', 'Searcher', seen ? `${flagged}/${seen}` : '0', 'attempts flagged', bots, status('searcher')),
+    tileMarkup('builder', 'Builder', b.applied ? `${b.held}/${b.applied}` : '0', b.applied ? 'fixes held' : 'fixes applied', b.applied ? `breaches on fixed paths ${b.before.breaches}/${b.before.attempts} → ${b.after.breaches}/${b.after.attempts}${b.failed ? ` · ${b.failed} failed` : ''}` : 'approve a finding to start', status('builder')),
+  ];
+  if (h) {
+    const state = !hacker?.available ? 'Simulator only' : !hacker?.enabled ? 'Off' : hacker?.current ? 'Attacking' : 'Learning';
+    const favorite = hacker?.best ? ` · favorite ${hacker.best.chain.join(' → ')}` : '';
+    tiles.push(tileMarkup('hacker', 'Hacker', h.attempts ? `${Math.round(h.gotThrough / h.attempts * 100)}%` : '–', h.attempts ? `of ${h.attempts} attempts got through` : 'no attempts yet', h.attempts ? `found ${h.foundControls.length} of ${h.total} weak spots${favorite}` : 'start it from the toolbar', state));
+  }
+  return tiles.join('');
+}
+// End agent tiles.
+function renderTiles() {
+  const markup = agentTilesMarkup(state.performance, state.agents, state.hacker);
+  if (markup !== lastTilesMarkup) { $('agent-tiles').innerHTML = markup; lastTilesMarkup = markup; }
+}
+
 // Live traffic: users online, hidden bots, the Searcher's score and the tripwire log.
 const BEHAVIOR_TEXT = {'credential-stuffing':'credential stuffing','storage-scraping':'storage scraping','request-flood':'request flood'};
 function botScoreMarkup(score) {
   if (!score) return '';
   const caught = new Set(score.caught || []);
   const rows = (score.bots || []).map(b => `<li><span class="history-result ${caught.has(b.clientId) ? 'blocked' : 'succeeded'}">${caught.has(b.clientId) ? 'Caught' : 'Missed'}</span> <span class="evidence">${escape(b.clientId)}</span> ${escape(BEHAVIOR_TEXT[b.behavior] || b.behavior)}</li>`).join('');
+  const hacker = score.hacker?.addresses ? `<li><span class="history-result ${score.hacker.caught.length ? 'blocked' : 'succeeded'}">Hacker</span> flagged ${escape(score.hacker.caught.length)} of ${escape(score.hacker.addresses)} addresses it used</li>` : '';
   const alarms = (score.falseAlarms || []).length ? `<li><span class="history-result succeeded">False alarm</span> ${score.falseAlarms.map(id => `<span class="evidence">${escape(id)}</span>`).join(' ')}</li>` : '';
+  const bots = (score.bots || []).length;
+  const hackerPart = score.hacker?.addresses ? `${bots ? ', ' : ''}${score.hacker.caught.length} of ${score.hacker.addresses} Hacker addresses` : '';
   const headline = score.searcherRunAt
-    ? `Searcher caught ${caught.size} of ${(score.bots || []).length} hidden bot${(score.bots || []).length === 1 ? '' : 's'}${(score.falseAlarms || []).length ? `, ${score.falseAlarms.length} false alarm${score.falseAlarms.length === 1 ? '' : 's'}` : ''}${score.searcherMode === 'model' ? ' (AI)' : ' (rule fallback)'}.`
+    ? `Searcher caught ${bots ? `${caught.size} of ${bots} hidden bot${bots === 1 ? '' : 's'}` : ''}${hackerPart}${(score.falseAlarms || []).length ? `, ${score.falseAlarms.length} false alarm${score.falseAlarms.length === 1 ? '' : 's'} on real users` : ''}${score.searcherMode === 'model' ? ' (AI)' : ' (rule fallback)'}.`
     : 'Run the Searcher before revealing to get a score.';
-  return `<div class="attack-history"><h3>${escape(headline)}</h3><ol>${rows}${alarms}</ol></div>`;
+  return `<div class="attack-history"><h3>${escape(headline)}</h3><ol>${rows}${hacker}${alarms}</ol></div>`;
 }
 function autoBlocksMarkup(traffic) {
   const active = new Set((traffic?.blocked || []).map(b => b.clientId));
@@ -328,6 +378,7 @@ function renderTraffic() {
     : `${traffic.users} user${traffic.users === 1 ? '' : 's'} online · ${traffic.botsEnabled ? (traffic.revealed ? `${traffic.revealed.bots.length} bot${traffic.revealed.bots.length === 1 ? '' : 's'} revealed` : 'bots hidden among them') : 'no bots'} · ${traffic.clients.length} active client${traffic.clients.length === 1 ? '' : 's'}`;
   const markup = `${botScoreMarkup(state.botScore)}${overloadMarkup(traffic, state.running)}${autoBlocksMarkup(traffic)}`;
   $('traffic-status').textContent = status;
+  $('traffic-summary').textContent = mode() !== 'simulation' ? 'Traffic' : `Traffic: ${traffic.users} user${traffic.users === 1 ? '' : 's'}${traffic.botsEnabled ? ' · bots' : ''}`;
   if (markup !== lastTrafficMarkup) { const [score, blocks] = [botScoreMarkup(state.botScore), overloadMarkup(traffic, state.running) + autoBlocksMarkup(traffic)]; $('bot-score').innerHTML = score; $('auto-blocks').innerHTML = blocks; lastTrafficMarkup = markup; }
 }
 
@@ -348,7 +399,8 @@ function renderEvents() {
   const events = state.events.filter(e => filter === 'all' || (filter === 'security' ? e.kind !== 'normal' : e.kind === 'normal')).slice(0,24);
   // Hacker traffic enters through the client edge; name it so it can be told apart from users.
   const label = (id, e) => e.actor === 'hacker' && id === 'client' ? `Hacker ${e.clientId}` : state.nodes.find(n=>n.id===id)?.label || id;
-  $('events').innerHTML = events.map(e => `<tr><td>${escape(e.tick)}</td><td>${escape(label(e.source, e))} <span class="muted">→</span> ${escape(label(e.target, e))}</td><td>${escape(e.action)}</td><td>${escape(e.protocol)}</td><td><span class="event-kind ${escape(e.kind)}">${escape(e.outcome)}</span></td></tr>`).join('') || '<tr><td colspan="5">No matching events yet.</td></tr>';
+  // Two lines per event so the feed fits beside the map: who to whom, then what and the result.
+  $('events').innerHTML = events.map(e => `<li class="event-row${e.actor === 'hacker' ? ' hacker' : ''}"><span class="ev-tick">${escape(e.tick)}</span><span class="ev-route">${escape(label(e.source, e))} → ${escape(label(e.target, e))}</span><span class="event-kind ${escape(e.kind)}">${escape(e.outcome)}</span><span class="ev-what">${escape(e.action)} · ${escape(e.protocol)}</span></li>`).join('') || '<li class="event-row empty">No matching events yet.</li>';
 }
 
 function inspectResource() {
@@ -374,13 +426,23 @@ $('traffic-apply').addEventListener('click',()=>{
   const users=Number($('traffic-users').value), bots=$('traffic-bots').checked;
   command('traffic',{users,bots},`Traffic set: ${users} user${users===1?'':'s'} online${bots?', with hidden bots among them. Run the Searcher, then reveal.':'.'}`);
 });
+$('toolbar').addEventListener('click',event=>{
+  const ai=event.target.closest('[data-ai]');
+  if(ai){command('ai/run',{agent:ai.dataset.ai},'Agent run finished. Review its result and whether a model or fallback was used.');return;}
+  const hacker=event.target.closest('#hacker-toggle');
+  if(hacker)command('hacker',{enabled:hacker.dataset.hacker==='start'},hacker.dataset.hacker==='start'?'Hacker started. It attacks every few ticks and learns which attacks pay off.':'Hacker stopped. It keeps what it learned.');
+});
+// A menu closes when you pick from it or click anywhere else.
+window.addEventListener('click',event=>{
+  for(const menu of document.querySelectorAll('details.menu[open]'))if(!menu.contains(event.target)||event.target.closest('[data-scenario]'))menu.open=false;
+});
 $('hacker').addEventListener('click',event=>{
   const button=event.target.closest('[data-hacker]');
   if(!button)return;
   if(button.dataset.hacker==='forget')command('hacker/forget',{},'Hacker learning wiped. Its next attempts start from scratch.');
   else command('hacker',{enabled:button.dataset.hacker==='start'},button.dataset.hacker==='start'?'Hacker started. It attacks every few ticks and learns which attacks pay off.':'Hacker stopped. It keeps what it learned.');
 });
-$('bots-reveal').addEventListener('click',()=>command('bots/reveal',{},'Hidden bots revealed. The score compares them with the newest Searcher run.'));
+$('bots-reveal').addEventListener('click',()=>command('bots/reveal',{},'Attackers revealed: hidden bots and the Hacker\'s addresses, scored against the newest Searcher run.'));
 $('auto-blocks').addEventListener('click',event=>{
   const button=event.target.closest('[data-unblock]');
   if(button) command('unblock',{clientId:button.dataset.unblock},`Admin lifted the tripwire block on ${button.dataset.unblock}.`);

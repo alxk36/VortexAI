@@ -43,11 +43,13 @@ export function performanceReport({ attackHistory = [], fixes = [], botScore = n
   // Hacker attempts read like attack runs: what they touched, what they got through, when they ended.
   const attempts = hacker?.attempts ?? [];
   const hackerEvents = attempts.map(a => a.controlEvents ?? (a.touched ?? []).map(control => ({ control, tick: a.endTick, allowed: (a.breached ?? []).includes(control) })));
+  // The Hacker keeps only its latest attempt records, so whole-run counts come from its run counters when given.
+  const stats = hacker?.stats ?? null;
   const hackerStats = hacker ? {
-    attempts: attempts.length,
-    gotThrough: attempts.filter(a => (a.breached ?? []).length).length,
-    foundControls: weakSpots.filter(c => attempts.some(a => (a.breached ?? []).includes(c))),
-    firstBreachAt: attempts.find(a => (a.breached ?? []).length)?.runAttempt ?? null,
+    attempts: stats?.attempts ?? attempts.length,
+    gotThrough: stats?.breaches ?? attempts.filter(a => (a.breached ?? []).length).length,
+    foundControls: weakSpots.filter(c => (stats?.found ?? attempts.flatMap(a => a.breached ?? [])).includes(c)),
+    firstBreachAt: stats ? stats.firstBreachAt : attempts.find(a => (a.breached ?? []).length)?.runAttempt ?? null,
     previousFirstBreach: hacker.previousFirstBreach ?? null,
     trend: hacker.trend ?? null,
     total: weakSpots.length,
@@ -61,7 +63,7 @@ export function performanceReport({ attackHistory = [], fixes = [], botScore = n
   }
   const searcher = {
     attempts: attackHistory.length, flagged: attackHistory.filter(h => h.flagged).length, bots,
-    hacker: attempts.length ? { attempts: attempts.length, flagged: attempts.filter(a => a.flagged).length } : null,
+    hacker: attempts.length ? { attempts: attempts.length, flagged: attempts.filter(a => a.flagged).length, recentOnly: (stats?.attempts ?? 0) > attempts.length } : null,
   };
 
   const before = { breaches: 0, attempts: 0 };
@@ -112,7 +114,7 @@ function verdictFor(attacker, builder, fixes, hacker) {
 function linesFor(attacker, searcher, builder, hacker) {
   const chains = attacker.aiChains ? ` · ${plural(attacker.aiChains, 'AI-invented chain')}` : '';
   const bots = searcher.bots ? ` · ${searcher.bots.caught} of ${plural(searcher.bots.total, 'hidden bot')}${searcher.bots.falseAlarms ? `, ${plural(searcher.bots.falseAlarms, 'false alarm')}` : ''}` : '';
-  const hackerFlags = searcher.hacker ? ` · ${searcher.hacker.flagged} of ${plural(searcher.hacker.attempts, 'Hacker attempt')}` : '';
+  const hackerFlags = searcher.hacker ? ` · ${searcher.hacker.flagged} of ${searcher.hacker.recentOnly ? 'the last ' : ''}${plural(searcher.hacker.attempts, 'Hacker attempt')}` : '';
   const lines = {
     attacker: `Found ${attacker.found} of ${attacker.total} weak spots · ${attacker.gotThrough} of ${plural(attacker.runs, 'attack run')} got through${chains}`,
     searcher: `Flagged ${searcher.flagged} of ${plural(searcher.attempts, 'attack attempt')}${bots}${hackerFlags}`,

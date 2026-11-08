@@ -23,7 +23,7 @@ test('the score shows caught, missed and false alarms, and is escaped', () => {
     bots: [{ clientId: '203.0.113.10', behavior: 'credential-stuffing' }, { clientId: '<img>', behavior: 'request-flood' }],
     caught: ['203.0.113.10'], missed: ['<img>'], falseAlarms: ['198.51.100.12'], searcherRunAt: 't', searcherMode: 'model',
   });
-  assert.match(markup, /Searcher caught 1 of 2 hidden bots, 1 false alarm \(AI\)/);
+  assert.match(markup, /Searcher caught 1 of 2 hidden bots, 1 false alarm on real users \(AI\)/);
   assert.match(markup, /Caught.*203\.0\.113\.10.*credential stuffing/);
   assert.match(markup, /Missed.*&lt;img&gt;/);
   assert.match(markup, /False alarm.*198\.51\.100\.12/);

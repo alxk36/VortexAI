@@ -15,6 +15,7 @@ class Element {
     this.id=id;this.context=context;this.listeners=new Map();this.value='';this.open=false;
     this.textContent='';this.innerHTML='';this.children=[];this.options=[{textContent:''}];this.captures=new Set();
     this.classList={toggle(){},add(){},remove(){}};
+    this.dataset={};
   }
   addEventListener(name,listener){const list=this.listeners.get(name)||[];list.push(listener);this.listeners.set(name,list);}
   dispatch(name,event={}){
