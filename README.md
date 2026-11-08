@@ -232,7 +232,7 @@ Tests make no paid model requests. Passing them does not certify live model acce
 | [source/docs/AI.md](source/docs/AI.md) | Agent interfaces, provider handling and trust boundaries |
 | [source/docs/REAL-LAB.md](source/docs/REAL-LAB.md) | Detailed Docker setup and limitations |
 | [source/docs/ARCHITECTURE.md](source/docs/ARCHITECTURE.md) | Historical simulation baseline; read its current-status note first |
-| [Document/](Document/) | Project notes and historical design prompts, not executable specifications |
+| [docs/](docs/) | Project notes and historical design prompts, not executable specifications |
 
 Production modules contain overview and targeted function comments explaining state ownership, validation, boundaries, and interaction behavior. Tests document expected behavior through named cases. When adding features, update relevant comments and this README's mode comparison, commands, and limits.
 
@@ -244,4 +244,4 @@ Production modules contain overview and targeted function comments explaining st
 - Production cloud connectors, remote multi-user deployment/authentication, arbitrary patch generation, and autonomous training are not implemented. The dashboard is designed for local use.
 - The repository currently has no checked-in CI workflow or license file. Local tests and historical verification notes are not continuous deployment checks.
 
-The files in [Document/prompts/](Document/prompts/) describe earlier plans. Current behavior is defined by the implementation and tests, with this README as the project entry point.
+The files in [docs/prompts/](docs/prompts/) describe earlier plans. Current behavior is defined by the implementation and tests, with this README as the project entry point.

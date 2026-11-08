@@ -148,7 +148,7 @@ In the simulator, paused or quarantined nodes stop modeled traffic, and Observe 
 
 ## Relationship to the prompts
 
-The historical documents under [Document/prompts/](../../Document/prompts/) supplied the team's design reference. Their independent-agent roles, restricted attacker view, evidence references, fixed remediation menu, explicit fallback, and administrator approval are carried into this implementation; the current build also includes a contained service lab and model-assisted decisions.
+The historical documents under [docs/prompts/](../../docs/prompts/) supplied the team's design reference. Their independent-agent roles, restricted attacker view, evidence references, fixed remediation menu, explicit fallback, and administrator approval are carried into this implementation; the current build also includes a contained service lab and model-assisted decisions.
 
 This stage extends the existing Node dashboard instead of replacing it with the prompt documents' proposed Python/FastAPI/Pydantic and React stack. `GET /api/findings` provides a canonical adapter with the shared finding fields (`source`, `origin`, `category`, `technique`, `resource_id`, `env_id`, `evidence`, `exploited`, `detected`, and `attack_run_id`) alongside the existing UI fields. This is not a complete implementation of the proposed environment/campaign/diagnosis schemas or route list.
 

@@ -2,7 +2,7 @@
 
 VortexAI uses the requested Anthropic model ID `claude-opus-5-5`. The three roles run as separate services and communicate through the platform. They do not call each other or execute model-written commands.
 
-The historical prompt documents in [Document/prompts/](../../Document/prompts/) supply the role split, evidence discipline, legal-action menu, and administrator approval requirements. The working Node application has evolved beyond those plans. The deterministic detector remains independent from AI advice. Run commands from `source/`; configure the broker in `source/.env`. See the [current README](../../README.md) for the full setup and mode comparison.
+The historical prompt documents in [docs/prompts/](../../docs/prompts/) supply the role split, evidence discipline, legal-action menu, and administrator approval requirements. The working Node application has evolved beyond those plans. The deterministic detector remains independent from AI advice. Run commands from `source/`; configure the broker in `source/.env`. See the [current README](../../README.md) for the full setup and mode comparison.
 
 ## Trust boundaries
 

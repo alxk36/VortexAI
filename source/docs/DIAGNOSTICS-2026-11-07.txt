@@ -1,0 +1,203 @@
+VortexAI diagnostic review — November 7, 2026
+
+Overall result
+The current software starts and runs after one startup-blocking merge conflict
+was resolved in source/src/runtime.mjs. The new image was built and all twelve
+Docker services started successfully. This is a working teaching prototype,
+with several remaining accuracy and failure-handling defects listed below.
+Only the merge conflict was repaired during this review. Other findings remain.
+
+Verified in this review
+- Windows Node 24.22.1; Docker Engine 29.9.2; container Node 24.22.2.
+- 168 automated tests passed after the startup repair.
+- All ten confined roles passed the live containment verifier.
+- All three real HTTP scenarios produced findings from observed evidence.
+- Each approved policy was acknowledged, and the same scenario's replay was
+  blocked with zero remaining open findings in its isolated test.
+- Real storage pause denied requests with HTTP 503; restoring Active/Normal
+  restored request handling.
+- Browser test: ten users plus two hidden bots; rule-based Searcher identified
+  both bots, and Reveal displayed two caught and zero missed.
+- Browser test: increasing from ten to sixty users triggered overload at
+  53 requests in a tick; the simulator paused and Resume restored operation.
+- Browser mode switching worked; service mode disabled users/bot controls.
+- No paid/provider model requests were made. ANTHROPIC_API_KEY is not configured.
+
+What changed to unblock startup
+The checked-in runtime had literal merge markers around the agent result
+message. Node rejected the entire module, preventing the new server from
+starting. The resolution retained concise provenance messages and the existing
+validated chain execution. Older healthy containers had masked this problem.
+Relevant file: source/src/runtime.mjs, around line 265.
+
+Remaining findings, in recommended repair order
+
+1. Attack history is not a reliable success/failure verdict.
+   File: source/src/runtime.mjs, lines 49-63.
+   - A paused real storage service returned only HTTP 503 denials, but history
+     reported succeeded. This was reproduced against the running containers.
+   - A mixed simulation chain can have one blocked step and a successful admin
+     action or data export, yet the whole run is labeled Blocked.
+   - At high traffic, earlier steps can leave the 160-event feed before the
+     verdict is calculated, changing the reported outcome.
+   - Executor generation changes reset detector evidence but retain attack
+     history and agent runs (lines 94-96). A new vulnerable lab can inherit
+     old blocked outcomes and make the fallback Attacker decline to test it.
+   Repair direction: collect per-run outcomes as steps execute; distinguish
+   blocked, partial success, success, and interruption/error; scope histories
+   to the environment generation. These summaries also affect agent context.
+
+2. Some new simulator traffic bypasses node admission controls.
+   Files: source/src/traffic.mjs, lines 75-84; source/src/simulation.mjs,
+   around lines 269-272.
+   Pausing Gateway and adding sixty users still emitted 59 allowed arrival
+   requests and triggered overload. Ordinary simulated sign-ins also remained
+   allowed while Identity was paused. Reproduced in isolated in-process probes.
+   Real-service pause/restore worked in the live test; this defect concerns
+   the newer synthetic traffic paths.
+
+3. Reveal can score the wrong population's Searcher assessment.
+   File: source/src/runtime.mjs, lines 223-237.
+   Applying traffic redraws users/bots and clears the visible score but keeps
+   old Searcher runs. Reveal can compare an old run with new bots, reporting
+   misleading misses and false alarms before any new client activity exists.
+   Repair direction: associate assessments with a population generation and
+   require a new assessment after applying traffic settings.
+
+4. A failed multi-service reset can leave displayed policy state stale.
+   File: source/lab/executor.mjs, lines 119-131.
+   Fault injection: storage reset succeeded, then database reset returned 503.
+   Actual storage protection was removed while the executor still reported
+   storagePrivate=true and running=true. This was an in-process failure test,
+   not a failure observed during the normal live run.
+   Repair direction: pause before reset, track acknowledged changes, and keep
+   the environment paused/unavailable until state is reconciled.
+
+5. The bundled live-check helper no longer completes.
+   File: source/lab/smoke.mjs, lines 12-13 and 33-36.
+   Reset now pauses the lab, but the helper immediately starts a scenario.
+   The actual run failed with: Resume the lab before running a scenario.
+   A separate diagnostic sequence with explicit Resume passed all three
+   scenarios, approved fixes, replays, and real node pause/restore checks.
+
+6. Old overloads can be shown as the reason for a later manual pause.
+   File: source/public/app.mjs, lines 189-194.
+   After overload, Resume, then manual Pause, the UI still says the earlier
+   overload paused the simulation. Track the current pause cause separately
+   from overload history.
+
+7. The environment detail text can describe the previous mode.
+   Browser reproduction: switch to Isolated service lab, then return to
+   In-memory simulation. The environment selector and notice correctly show
+   synthetic mode, but the adjacent detail still says Real HTTP services.
+   Runtime retains its last executor detail across this transition. Reset the
+   description on each mode change so the current data source is unambiguous.
+
+Environment options
+
+In-memory simulation
+- Synthetic traffic and policies; no external cloud account.
+- Three fixed scenarios: Exposed storage, Credential abuse, Lateral movement.
+- Optional agent-composed chains: one to eight validated catalog steps.
+- One to sixty legitimate users and optional one to three additional bots.
+- Bots demonstrate credential stuffing, storage scraping, or request floods.
+- Apply traffic redraws the population and clears its activity and score.
+- Newly added users create a one-tick arrival burst. Ordinary steady traffic
+  is capped at one to three request chains per tick, not sixty independent
+  production workloads.
+- The per-client tripwire starts blocking at eight gateway requests in a tick.
+  Blocks expire after roughly twenty model ticks, or can be lifted by Unblock.
+  Pause also freezes model-time expiry.
+- Forty allowed gateway requests in a tick triggers a system overload pause.
+- Reveal shows bots plus caught/missed/false-alarm scoring. Run a fresh Searcher
+  assessment after each population change until finding 3 is repaired.
+
+Isolated service lab
+- Six disposable HTTP targets: Gateway, Load balancer, Application, Identity,
+  Database, and Object storage. Database/storage use fabricated SQLite data.
+- Three fixed teaching scenarios; findings use observed HTTP outcomes.
+- Users, hidden bots, tripwire scoring, and composed chains are unavailable.
+- Traffic is gated by the live containment verifier. Only the dashboard is
+  published to the host, at 127.0.0.1:4173.
+- Node controls change request admission, not Docker process state or network
+  wiring. Health and authenticated management routes remain available.
+- This is not a full AWS/Azure/GCP emulator or packet capture system.
+
+Session, investigation, and remediation controls
+- Pause/Resume controls traffic progression.
+- Reset restores vulnerable policies, clears current investigation/run state,
+  and leaves the environment paused. Resume is required afterward.
+- The event filter shows all, attack/blocked, or normal traffic.
+- Findings expose evidence, a proposed fix, its tradeoff, and replay status.
+- Approve & apply changes the offered policy. Applying is separate from proving
+  effectiveness: rerun the same scenario to obtain blocked-replay validation.
+- Exposed storage -> private-access policy.
+- Credential abuse -> demonstration second-factor requirement.
+- Lateral movement -> least-privilege database export permission.
+- Existing identity sessions are not revoked by the MFA demonstration. The
+  low-privilege-token/application flaw is not removed by the database fix.
+
+Agent controls — live AI deferred
+- Attacker: Plan & run scenario. A validated choice can execute a bounded
+  scenario; composed chains are simulation-only.
+- Searcher: Analyze observations. Reviews evidence and client activity;
+  provides advisory labels and suspected clients.
+- Builder: Propose improvements. Ranks/explains existing offered fixes;
+  administrative approval is still required to apply one.
+- FALLBACK means deterministic local rules, not AI inference. MODEL means a
+  provider response passed validation. Provider model access was not tested.
+- Calls happen only on explicit actions; there is no continuously autonomous
+  agent loop, learning/retraining pipeline, or arbitrary command execution.
+- Optional future credential location: source/.env, ANTHROPIC_API_KEY.
+
+Map and node controls
+- Left/middle drag: full horizontal/vertical orbit, reversed vertical motion.
+- Shift + drag: pan. Wheel: zoom.
+- Ctrl + click: toggle selection.
+- Ctrl + left/right drag: move a node or selected group on the horizontal plane.
+- Alt + left drag: box-select projected node centers; replaces selection.
+- Right-click a selected node: shared information and supported options.
+- Escape: cancel an unfinished move or box selection.
+- Status: Active or Paused. Action: Normal, Observe, or Quarantine.
+- In real mode only the six real targets support operational edits. Mixed
+  selections offer only controls shared by every selected resource.
+- Group edits are sequential; failures can leave earlier changes applied.
+- Inspect resource / Edit selected provides individual coordinate editing
+  from -6 to 6. Height is fixed. Reset view and Reset layout are separate.
+- Layout persists in this browser per environment and does not change routing.
+
+Data limits
+- Latest 24 matching events shown; 160 retained in the rolling event feed.
+- Six attack-history entries shown; twelve retained.
+- Three recent agent result cards shown; twelve retained.
+- Client activity summaries cover forty model ticks.
+- Findings, events, sessions, and histories are transient; no durable audit
+  archive or report-export workflow is implemented in the application.
+- All tabs share server environment state; browser layout is separate.
+
+Running the software
+All commands now belong in source/, not the repository root.
+Windows PowerShell:
+  cd "C:\Users\alexs\Documents\Business\Contest\HackRPI\11726Cloud_CloudAISecurity\source"
+  npm.cmd run lab:status
+  npm.cmd run lab:verify
+  npm.cmd run lab:up
+
+Dashboard: http://127.0.0.1:4173
+Final demonstration state: simulation selected, ten legitimate users and two
+revealed bots, paused for inspection. The latest fallback Searcher assessment
+caught both bots. Choose Resume simulation to continue. The real-service
+targets were reset to their baseline and left paused after testing.
+lab:up builds/starts/verifies; lab:status reads status; lab:verify renews the
+traffic gate; lab:down removes the lab containers and networks.
+npm start instead launches the standalone simulator; do not compete with the
+Docker dashboard for port 4173. Standalone mode cannot reach the service lab.
+
+The prior Ubuntu terminal had Node 12 and no docker command. These diagnostics
+used the working Windows Node/Docker setup. WSL requires its own Node 24+
+installation and Docker Desktop integration before using that terminal.
+
+Validation scope
+Passing the existing suite does not cover the additional defects reproduced
+above. Containment checks apply to this bounded teaching deployment. Live AI
+access and arbitrary exploit isolation were not tested.
