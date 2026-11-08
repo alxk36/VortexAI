@@ -55,3 +55,31 @@ test('agent performance adds a Hacker row when the report has one', () => {
   assert.match(body, /<strong>Hacker<\/strong>/);
   assert.match(body, /log-agent hacker/);
 });
+
+test('the judge view shows one large number per agent with what it counts, escaped', () => {
+  const tiles = (perf, agents, h) => render(section('// Agent tiles:', '// End agent tiles.'), 'agentTilesMarkup(input.perf, input.agents, input.hacker)', { perf, agents, hacker: h });
+  const perf = {
+    attacker: { found: 2, total: 4, runs: 2, gotThrough: 1 },
+    searcher: { attempts: 2, flagged: 2, bots: { caught: 2, total: 2, falseAlarms: 0 }, hacker: { attempts: 17, flagged: 16 } },
+    builder: { applied: 3, held: 3, failed: 0, before: { breaches: 13, attempts: 13 }, after: { breaches: 0, attempts: 7 } },
+    hacker: { attempts: 20, gotThrough: 17, foundControls: ['storagePrivate', 'metadataProtection'], total: 4 },
+  };
+  const markup = tiles(perf, { attacker: { status: 'Ready' }, searcher: { status: '<b>x</b>' }, builder: { status: 'Validated' } }, { available: true, enabled: true, best: { chain: ['discover', 'metadata-ssrf'] } });
+  for (const [number, caption] of [['2/4', 'weak spots found'], ['18/19', 'attempts flagged'], ['3/3', 'fixes held'], ['85%', 'of 20 attempts got through']]) {
+    assert.match(markup, new RegExp(`tile-number">${number}</div><div class="tile-caption">${caption}`));
+  }
+  assert.match(markup, /breaches on fixed paths 13\/13 → 0\/7/);
+  assert.match(markup, /2 of 2 hidden bots/);
+  assert.match(markup, /favorite discover → metadata-ssrf/);
+  assert.ok(!markup.includes('<b>x</b>'));
+  const idle = tiles({ ...perf, attacker: { found: 0, total: 3, runs: 0, gotThrough: 0 }, builder: { applied: 0, held: 0, failed: 0, before: {}, after: {} }, hacker: null }, {}, null);
+  assert.match(idle, /no attack runs yet/);
+  assert.match(idle, /approve a finding to start/);
+  assert.ok(!idle.includes('agent-tile hacker'), 'no Hacker tile in the container lab');
+});
+
+test('the judge view keeps every control in the toolbar and the events beside the map', () => {
+  for (const id of ['toolbar', 'attack-menu', 'traffic-menu', 'hacker-toggle', 'verdict-line', 'agent-tiles', 'proof-panel', 'agents-panel', 'events', 'findings']) assert.match(html, new RegExp(`id="${id}"`));
+  for (const agent of ['attacker', 'searcher', 'builder']) assert.match(html, new RegExp(`data-ai="${agent}"`));
+  assert.match(html, /<ol id="events" class="event-feed">/);
+});

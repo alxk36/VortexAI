@@ -239,6 +239,8 @@ export class Runtime {
     result.hacker = { ...hacker, available: this.mode === 'simulation' };
     const hackerRun = this.mode === 'simulation' ? {
       attempts: this.hacker.attempts.filter(a => a.run === this.runNumber),
+      // Whole-run counters: the attempt records above are only the most recent window.
+      stats: this.hacker.runStats.get(this.runNumber) ?? null,
       previousFirstBreach: this.hacker.previousRun()?.firstBreachAt ?? null, trend: hacker.trend,
     } : null;
     result.performance = performanceReport({ attackHistory: this.attackHistory, fixes: this.fixes, botScore: this.botScore, autoBlocked: (result.traffic?.autoBlocks ?? []).map(b => b.clientId), ...(result.weakSpots ? { weakSpots: result.weakSpots } : {}), hacker: hackerRun });
@@ -385,7 +387,8 @@ export class Runtime {
     this.simulatorOnly();
     return this.locked(async()=>{ this.simulation.setTraffic({ users, bots }); this.botScore = null; });
   }
-  /** Reveal the hidden bots and score the newest Searcher run against them. */
+  /** Reveal the attackers hidden in the traffic (bots, and the addresses the Hacker used this run)
+   * and score the newest Searcher run against them. Only real users count as false alarms. */
   async revealBots() {
     this.simulatorOnly();
     return this.locked(async()=>{
@@ -393,15 +396,19 @@ export class Runtime {
       const run = this.runs.find(r => r.agent === 'searcher');
       const suspects = new Set(run?.suspects ?? []);
       const botIds = new Set(bots.map(b => b.clientId));
+      const hackerIds = [...new Set(this.hacker.attempts.filter(a => a.run === this.runNumber).flatMap(a => a.clientIds))];
+      const hackerSet = new Set(hackerIds);
       this.botScore = {
         bots, searcherRunAt: run?.time ?? null, searcherMode: run?.mode ?? null,
         caught: bots.filter(b => suspects.has(b.clientId)).map(b => b.clientId),
         missed: bots.filter(b => !suspects.has(b.clientId)).map(b => b.clientId),
-        falseAlarms: [...suspects].filter(id => !botIds.has(id)),
+        hacker: { addresses: hackerIds.length, caught: hackerIds.filter(id => suspects.has(id)) },
+        falseAlarms: [...suspects].filter(id => !botIds.has(id) && !hackerSet.has(id)),
       };
-      const { caught, missed, falseAlarms } = this.botScore;
+      const { caught, missed, falseAlarms, hacker } = this.botScore;
       const behavior = id => bots.find(b => b.clientId === id)?.behavior;
-      this.log('searcher', `Bot reveal: AI flagged ${caught.length} of ${bots.length}${missed.length ? `; missed ${missed.map(id => `${id} (${behavior(id)})`).join(', ')}` : ''}${falseAlarms.length ? `; ${falseAlarms.length} false alarm${falseAlarms.length === 1 ? '' : 's'}` : ''}.`);
+      const hackerText = hacker.addresses ? `; Hacker: ${hacker.caught.length} of ${hacker.addresses} addresses flagged` : '';
+      this.log('searcher', `Reveal: flagged ${caught.length} of ${bots.length} bot${bots.length === 1 ? '' : 's'}${hackerText}${missed.length ? `; missed ${missed.map(id => `${id} (${behavior(id)})`).join(', ')}` : ''}${falseAlarms.length ? `; ${falseAlarms.length} false alarm${falseAlarms.length === 1 ? '' : 's'}` : ''}.`);
     });
   }
   async unblockClient(clientId) {

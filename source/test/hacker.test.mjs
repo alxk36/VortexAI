@@ -294,3 +294,38 @@ test('Restart demo replays the pinned first cloud from scratch; Reset then relea
   rt.mode = 'simulation';
   await assert.rejects(() => rt.restartDemo(-1), /whole number/);
 });
+
+test('the reveal scores Hacker addresses separately: flagging the Hacker is never a false alarm', async () => {
+  const rt = new Runtime({ simulation: new Simulation({ random: seeded(8) }), container: false, hacker: new Hacker({ random: seeded(2) }) });
+  await rt.setTraffic({ users: 10, bots: true });
+  rt.hacker.arms.set('x', { key: 'x', chain: ['storage-list', 'storage-read'], pace: 'slow', spread: 'single', tries: 1, value: 2, wins: 1, lastReward: 2 });
+  await rt.setHacker(true);
+  await ticks(rt, 12);
+  const hackerIp = rt.hacker.attempts[0].clientIds[0];
+  const user = rt.simulation._traffic.userIds[0];
+  const bot = rt.simulation._traffic.bots[0].clientId;
+  rt.runs.unshift({ agent: 'searcher', mode: 'model', time: 't', suspects: [hackerIp, bot, user], evidenceIds: [] });
+  await rt.revealBots();
+  const score = rt.snapshot().botScore;
+  assert.deepEqual(score.falseAlarms, [user], 'only the real user is a false alarm');
+  assert.ok(score.caught.includes(bot));
+  assert.deepEqual(score.hacker.caught, [hackerIp]);
+  assert.match(rt.snapshot().learningLogs[0].text, /Hacker: 1 of \d+ addresses flagged/);
+
+  const { readFileSync } = await import('node:fs');
+  const vm = (await import('node:vm')).default;
+  const app = readFileSync(new URL('../public/app.mjs', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('// Live traffic:'), app.indexOf('// End live traffic.'));
+  const escapeLine = app.split('\n').find(line => line.startsWith('const escape ='));
+  const ctx = { score };
+  vm.runInNewContext(`${escapeLine}\n${source}\nresult = botScoreMarkup(score);`, ctx);
+  assert.match(ctx.result, /1 of \d+ Hacker addresses, 1 false alarm on real users \(AI\)/);
+  assert.match(ctx.result, /Hacker<\/span> flagged 1 of \d+ addresses it used/);
+});
+
+test('long runs count every Hacker attempt, not only the records it keeps', () => {
+  const attempts = Array.from({ length: 120 }, (_, i) => ({ runAttempt: 111 + i, breached: ['storagePrivate'], touched: ['storagePrivate'], endTick: 500 + i, flagged: i % 2 === 0 }));
+  const report = performanceReport({ weakSpots: ['storagePrivate', 'requireMfa'], hacker: { attempts, stats: { attempts: 230, breaches: 200, firstBreachAt: 2, found: ['storagePrivate', 'requireMfa'] }, trend: null } });
+  assert.match(report.lines.hacker, /^200 of 230 attempts got through \(87%\) · found 2 of 2 weak spots · first breach: attempt 2/);
+  assert.match(report.lines.searcher, /60 of the last 120 Hacker attempts/);
+});
