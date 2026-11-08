@@ -6,18 +6,91 @@ VortexAI is a local learning platform for exploring cloud-security weaknesses. W
 
 The platform combines **Attacker**, **Searcher**, and **Builder** roles with an in-memory simulator and an optional isolated Docker service lab. AI decisions are validated against permitted actions; unavailable or invalid model responses produce an explicit **FALLBACK** result. The application does not connect to an AWS, Azure, or GCP account.
 
-## Quick start
+## Run instructions
 
-Install **Node.js 24 or newer**, including npm. From the repository root:
+### 1. Open the project in the correct terminal
+
+On Windows, open **PowerShell** in the repository folder. Install **Node.js 24 or newer**, including npm, then run:
+
+```powershell
+cd .\source
+node --version
+```
+
+The version must be `v24.x.x` or newer. If your terminal is already in `source`, skip the `cd` command. All application commands run inside **`source/`**, which contains `package.json`, `compose.yaml`, and the Dockerfile. There are no third-party npm dependencies to install.
+
+For this computer, you can enter that folder directly with:
+
+```powershell
+Set-Location 'C:\Users\alexs\Documents\Business\Contest\HackRPI\11726Cloud_CloudAISecurity\source'
+```
+
+The Windows examples use `npm.cmd` to avoid PowerShell's script-execution-policy error. On Linux or macOS, use `npm` instead.
+
+### 2. Choose how to run
+
+**Docker lab — simulation plus real service containers**
+
+Start **Docker Desktop** with its Linux/WSL 2 engine. Docker Engine **28+** and Compose are required. If a standalone `npm start` server is running, stop it with Ctrl+C first. Then run:
+
+```powershell
+npm.cmd run lab:up
+```
+
+This prepares `source/.env` and local control tokens, builds the current code, starts the twelve containers, waits for health checks, and verifies isolation. The first run may take several minutes and needs Internet access to download the base image. Wait for the containment-success message before selecting real services.
+
+**The AI agents can be connected later.** No Anthropic key is required to run the platform. Leave `ANTHROPIC_API_KEY` empty in `source/.env` to use explicitly labeled rule fallback. Do not enter a key in chat or the dashboard.
+
+**Standalone simulator — no Docker required**
+
+This starts only the in-memory simulator and its rule fallback. If the Docker lab is running, stop it first with `npm.cmd run lab:down`; that removes its containers/networks and discards their disposable state. Then run:
+
+```powershell
+npm.cmd start
+```
+
+Keep this terminal open. Ctrl+C stops the standalone server. It cannot connect to the real-service lab. Both launch modes use port **4173**, so run only one of them on that port at a time.
+
+### 3. Open and use the dashboard
+
+Open **[http://127.0.0.1:4173](http://127.0.0.1:4173)**. If it was already open while you rebuilt the app, refresh the page.
+
+1. Choose **In-memory simulation** to explore users, hidden bots, and the 3D controls. Choose **Isolated service lab** for real HTTP scenarios after Docker verification succeeds.
+2. If the environment is paused, select **Resume simulation** or **Resume lab traffic**.
+3. Run a scenario, review its finding, approve the offered fix, and replay the same scenario to check the result.
+4. **Reset lab** restores the vulnerable baseline and leaves traffic paused. Resume before starting the next experiment.
+
+Docker runs in the background; closing its startup terminal does not stop the lab. Standalone mode stops when its server process exits.
+
+### 4. Check, stop, or restart
+
+Run these from `source/` in PowerShell:
+
+| Command | Result |
+| --- | --- |
+| `npm.cmd run lab:status` | Show the existing containers and their health |
+| `npm.cmd run lab:verify` | Recheck isolation while the lab is running |
+| `npm.cmd run lab:down` | Stop/remove the lab containers and networks |
+| `npm.cmd run lab:up` | Build/start the current code and verify the lab again |
+| `npm.cmd test` | Run the automated checks; does not start the dashboard |
+
+Use **`npm run lab:status`**, not `npm lab:status`; every `lab:*` package script requires `run`. To switch from Docker to standalone, stop the lab first. To switch from standalone to Docker, stop the standalone process with Ctrl+C first.
+
+### Using an Ubuntu/WSL terminal
+
+Windows and WSL have separate Node installations. Check `node --version` **inside Ubuntu**; a working Windows Node installation does not upgrade Ubuntu's Node. Node 12 can fail at startup with `Unexpected token '?'`; use Node 24 or newer.
+
+For Docker commands from Ubuntu, enable **Docker Desktop → Settings → Resources → WSL Integration → your Ubuntu distribution**, apply the change, and reopen the Ubuntu terminal. Check `docker version` and `docker compose version` there before starting the lab. See [Docker's WSL setup instructions](https://docs.docker.com/desktop/features/wsl/#enable-docker-in-a-wsl-2-distribution).
+
+From the repository root in Ubuntu:
 
 ```sh
 cd source
-npm start
+node --version
+npm run lab:up
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Leave the terminal running; Ctrl+C stops the server. The simulator requires no API key, cloud account, Docker, or dependency installation. There are no third-party npm dependencies.
-
-All `npm` and `docker compose` commands below run inside **`source/`**, where `package.json`, `compose.yaml`, and the Dockerfile live. If you are already there, do not run `cd source` again. If PowerShell blocks `npm.ps1`, use `npm.cmd` instead of `npm`, or start directly with `node server.mjs`.
+If Ubuntu reports `docker: not found` or the launcher says Docker is unavailable while Docker Desktop is running, use the PowerShell instructions above until WSL integration is configured.
 
 ## What is implemented
 
