@@ -5,6 +5,7 @@
 import { Simulation } from './simulation.mjs';
 import { prepareContext, runAgent, validateDecision, servedModel, DEFAULT_MODEL } from '../ai/agents.mjs';
 import { performanceReport, controlText } from './performance.mjs';
+import { Hacker } from './hacker.mjs';
 
 const ROLES = ['attacker', 'searcher', 'builder'];
 // These addresses are deployment wiring, never input accepted from a browser or model.
@@ -34,7 +35,7 @@ async function internalJson(url, token, body, fetchImpl = fetch) {
 /** Coordinates modes and independent workers. It never executes model-generated code. */
 export class Runtime {
   constructor({simulation = new Simulation(), container = process.env.VORTEX_CONTAINER === '1', fetchImpl = fetch,
-    executorToken = process.env.LAB_EXECUTOR_TOKEN, agentToken = process.env.AGENT_CONTROL_TOKEN} = {}) {
+    executorToken = process.env.LAB_EXECUTOR_TOKEN, agentToken = process.env.AGENT_CONTROL_TOKEN, hacker = new Hacker()} = {}) {
     this.simulation = simulation; this.container = container; this.fetch = fetchImpl;
     this.executorToken = executorToken; this.agentToken = agentToken;
     this.mode = 'simulation'; this.real = new Simulation(); this.generation = null;
@@ -42,6 +43,8 @@ export class Runtime {
     this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
     // Per lab run: applied-fix ledger. Across runs: each agent's learning log.
     this.fixes = []; this.logs = []; this.runNumber = 1; this.seenTraffic = new Set();
+    // Across runs: the Hacker's learned values, and the Attacker's earlier results (outsider view).
+    this.hacker = hacker; this.hacker.newRun(this.runNumber); this.earlierAttacks = [];
     this.detail = container ? 'Select real services after lab:verify passes.' : 'Start Docker with npm run lab:up to connect real services.';
     this.aiDetail = container ? 'Claude Opus 5.5 connection is checked on each run. Add ANTHROPIC_API_KEY in .env; missing access is labeled fallback.' : 'Agent containers are offline. Explicit rule fallback is available. Add your Anthropic key to .env for the Docker lab.';
   }
@@ -74,6 +77,20 @@ export class Runtime {
     }
     this.refreshFixes();
   }
+  /** A finished Hacker attempt: was it noticed, did it break a fix, and what did it learn. */
+  recordHack(attempt) {
+    const flagged = this.flaggedIds();
+    attempt.flagged = attempt.tripped || attempt.eventIds.some(id => flagged.has(id)) || attempt.clientIds.some(id => this.suspects().has(id));
+    for (const fix of this.fixes) {
+      if (attempt.breached.includes(fix.policyKey) && fix.appliedTick < attempt.endTick && fix.failedTick === undefined) {
+        fix.failedTick = attempt.endTick;
+        this.log('builder', `Failed: ${fix.title} did not hold; the Hacker got through.`);
+      }
+    }
+    for (const lesson of attempt.lessons) this.log('hacker', lesson);
+  }
+  /** Client addresses any Searcher run has named as suspects. */
+  suspects() { return new Set(this.runs.filter(r => r.agent === 'searcher').flatMap(r => r.suspects ?? [])); }
   /** Event IDs the Searcher side has flagged: rule findings, AI citations, blocked-replay checks. */
   flaggedIds() {
     const state = this.mode === 'lab' ? this.real.snapshot() : this.simulation.snapshot();
@@ -113,7 +130,15 @@ export class Runtime {
   }
   /** Lab reset or mode switch: numbers start over, learnings carry into the next run. */
   startNewRun() {
+    // The Attacker keeps only what an outsider saw: which path, and whether it got through.
+    const finished = this.attackHistory.map(h => ({ run: this.runNumber, scenarioId: h.scenarioId, ...(h.plan ? { plan: [...h.plan] } : {}), result: h.result }));
+    this.earlierAttacks = [...finished, ...this.earlierAttacks].slice(0, 12);
     this.runNumber += 1; this.fixes = []; this.seenTraffic = new Set();
+    this.hacker.newRun(this.runNumber);
+  }
+  /** Each Claude agent's own lessons from earlier runs, newest first. */
+  notesFor(agent) {
+    return this.logs.filter(l => l.agent === agent && l.run < this.runNumber).slice(0, 6).map(l => `Run ${l.run}: ${l.text}`);
   }
   /** Simulator runs advance one step per tick; settle once the run has finished. */
   settleAttack() {
@@ -196,15 +221,30 @@ export class Runtime {
     result.ai = {available:this.container,detail:this.aiDetail,runs:structuredClone(this.runs)};
     result.attackHistory = structuredClone(this.attackHistory);
     result.botScore = structuredClone(this.botScore);
-    result.performance = performanceReport({ attackHistory: this.attackHistory, fixes: this.fixes, botScore: this.botScore, autoBlocked: (result.traffic?.autoBlocks ?? []).map(b => b.clientId) });
+    const hacker = this.hacker.view();
+    result.hacker = { ...hacker, available: this.mode === 'simulation' };
+    const hackerRun = this.mode === 'simulation' ? {
+      attempts: this.hacker.attempts.filter(a => a.run === this.runNumber),
+      previousFirstBreach: this.hacker.previousRun()?.firstBreachAt ?? null, trend: hacker.trend,
+    } : null;
+    result.performance = performanceReport({ attackHistory: this.attackHistory, fixes: this.fixes, botScore: this.botScore, autoBlocked: (result.traffic?.autoBlocks ?? []).map(b => b.clientId), ...(result.weakSpots ? { weakSpots: result.weakSpots } : {}), hacker: hackerRun });
     result.learningLogs = structuredClone(this.logs.slice(0, 40));
+    // Memory across runs for the Claude agents; prepareContext decides what each one sees.
+    result.runNumber = this.runNumber;
+    result.earlierAttacks = structuredClone(this.earlierAttacks);
+    result.agentNotes = { searcher: this.notesFor('searcher'), builder: this.notesFor('builder') };
     return result;
   }
   async tick() {
     // Do not start a new read while an operation owns the state. A read already
     // underway is awaited by locked(), so it cannot overwrite a newer mutation.
     if (this.busy) return;
-    if (this.mode === 'simulation') { this.simulation.tick(); this.settleAttack(); this.logTraffic(); this.refreshFixes(); }
+    if (this.mode === 'simulation') {
+      this.simulation.tick();
+      const attempt = this.hacker.tick(this.simulation);
+      if (attempt) this.recordHack(attempt);
+      this.settleAttack(); this.logTraffic(); this.refreshFixes();
+    }
     else {
       try { await this.sync(); }
       catch { this.detail = 'Lab telemetry disconnected. Last observed state retained; no synthetic replacement.'; }
@@ -235,8 +275,8 @@ export class Runtime {
         this.ingest(await this.executor('/running',{running:false}));
       }
       const changed = this.mode !== mode;
-      this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
       if (changed) this.startNewRun();
+      this.mode = mode; this.runs = []; this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
     });
   }
   async runScenario(id) {
@@ -277,7 +317,20 @@ export class Runtime {
       // Reset lab leaves the environment paused so the admin starts traffic deliberately.
       if (this.mode==='simulation') { this.simulation.reset(); this.simulation.setRunning(false); }
       else { this.ingest(await this.executor('/reset',{})); this.ingest(await this.executor('/running',{running:false})); }
-      this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null; this.startNewRun();
+      this.startNewRun(); this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null;
+    });
+  }
+  /** Turn the Hacker on or off. It runs only in the in-memory simulator. */
+  async setHacker(enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('enabled must be true or false.');
+    this.simulatorOnly();
+    return this.locked(async()=>{ this.hacker.enabled = enabled; });
+  }
+  /** Wipe what the Hacker has learned, to compare an untrained run with a trained one. */
+  async forgetHacker() {
+    return this.locked(async()=>{
+      this.hacker.forget();
+      this.log('hacker', 'Learning wiped: starting from scratch.');
     });
   }
   async updateNode(id, status, action) {
@@ -343,6 +396,9 @@ export class Runtime {
         // Attack runs whose events the Searcher cited count as flagged.
         const cited = new Set(result.evidenceIds);
         for (const h of this.attackHistory) if (!h.flagged && (h.eventIds ?? []).some(id => cited.has(id))) h.flagged = true;
+        // Hacker attempts count as flagged when their events are cited or their address is a suspect.
+        const named = new Set(result.suspects ?? []);
+        for (const a of this.hacker.attempts) if (a.run === this.runNumber && !a.flagged && (a.eventIds.some(id => cited.has(id)) || a.clientIds.some(id => named.has(id)))) a.flagged = true;
         const origins = ['internal', 'external'].map(o => [o, (result.labels ?? []).filter(l => l.origin === o).length]).filter(([, n]) => n).map(([o, n]) => `${n} ${o}`).join(', ');
         const n = result.suspects?.length ?? 0, m = result.evidenceIds.length;
         this.log('searcher', `Flagged ${n} suspect client${n === 1 ? '' : 's'} and ${m} event${m === 1 ? '' : 's'}${origins ? ` (${origins})` : ''}.`);

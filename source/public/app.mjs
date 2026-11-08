@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVersion = 0;
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
-let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', dialogNode = '';
+let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', lastHackerMarkup = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
 const mode = () => state?.runtime?.mode || 'simulation';
 const serviceNodeIds = new Set(['gateway','lb','app','storage','iam','db']);
@@ -62,6 +62,7 @@ function renderControls() {
   const trafficLocked = busy || !state || mode() !== 'simulation' || Boolean(state?.activeScenario);
   $('traffic-apply').disabled = trafficLocked;
   $('bots-reveal').disabled = trafficLocked || !state?.traffic?.botsEnabled;
+  document.querySelectorAll('[data-hacker]').forEach(button => { button.disabled = busy || !state || (mode() !== 'simulation' && button.dataset.hacker !== 'forget'); });
   document.querySelectorAll('[data-scenario]').forEach(button => {
     button.disabled = busy || Boolean(state?.activeScenario);
   });
@@ -106,7 +107,7 @@ function update(next) {
   $('environment-notice').textContent = nextMode==='lab'?'Real service requests inside the configured lab · Only predefined scenarios and targets':'Synthetic events only · No cloud account · No real attack traffic';
   $('event-note').textContent = `Latest 24 matching events · ${nextMode==='lab'?'Measured service outcomes inside the lab':'Synthetic data-plane and identity audit events'} · Animation follows event records`;
   $('event-count-label').textContent = nextMode==='lab'?'Events observed':'Events generated';
-  $('reset-note').textContent = nextMode==='lab'?'Reset restores the disposable services to their vulnerable baseline. All browser tabs share the lab state.':'Reset restores the in-memory model to its vulnerable baseline. All browser tabs share the simulation state.';
+  $('reset-note').textContent = nextMode==='lab'?'Reset restores the disposable services to their vulnerable baseline. All browser tabs share the lab state.':'Reset starts a new run on a freshly randomized cloud: three or four weak spots, different each time. The Hacker keeps what it learned. All browser tabs share the simulation state.';
   $('ai-detail').textContent = state.ai?.detail || 'Models are not configured. Agent decisions use the explicit fallback.';
   for (const [id,key] of [['total-events','totalEvents'],['attack-events','attackEvents'],['blocked-events','blockedEvents'],['open-findings','openFindings']]) $(id).textContent = state.metrics[key].toLocaleString();
   const agentsMarkup = ['attacker','searcher','builder'].map((key,i) => {
@@ -115,6 +116,7 @@ function update(next) {
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
   renderPerformance();
+  renderHacker();
   const aiMarkup=(state.ai?.runs || []).slice(0,3).map(run=>aiRunMarkup(run)).join('');
   if(aiMarkup!==lastAiMarkup){$('ai-runs').innerHTML=aiMarkup;lastAiMarkup=aiMarkup;}
   const historyMarkup=attackHistoryMarkup(state.attackHistory);
@@ -140,13 +142,22 @@ const VERDICT_LABEL = {idle:'No data', 'at-risk':'At risk', defended:'Defended',
 function performanceMarkup(perf, logs) {
   const status = Object.hasOwn(VERDICT_LABEL, perf.verdict.status) ? perf.verdict.status : 'idle';
   const first = line => String(line).split(' · ')[0];
-  const summary = `<span class="verdict ${status}">${VERDICT_LABEL[status]}</span> <span class="perf-glance">${escape(first(perf.lines.attacker))} · ${escape(first(perf.lines.searcher))} · ${escape(first(perf.lines.builder))}</span>`;
-  const rows = ['attacker', 'searcher', 'builder'].map(agent => `<div class="perf-row"><strong>${agent[0].toUpperCase() + agent.slice(1)}</strong><span>${escape(perf.lines[agent])}</span><small>${escape(perf.definitions[agent])}</small></div>`).join('');
-  const entries = (logs || []).slice(0, 12).map(l => `<li><span class="log-agent ${['attacker', 'searcher', 'builder'].includes(l.agent) ? l.agent : ''}">${escape(l.agent)}</span>Run ${escape(l.run)} · tick ${escape(l.tick)}: ${escape(l.text)}</li>`).join('');
+  const agents = ['attacker', 'searcher', 'builder', 'hacker'].filter(agent => perf.lines[agent]);
+  const summary = `<span class="verdict ${status}">${VERDICT_LABEL[status]}</span> <span class="perf-glance">${agents.map(agent => escape(first(perf.lines[agent]))).join(' · ')}</span>`;
+  const rows = agents.map(agent => `<div class="perf-row"><strong>${agent[0].toUpperCase() + agent.slice(1)}</strong><span>${escape(perf.lines[agent])}</span><small>${escape(perf.definitions[agent] ?? '')}</small></div>`).join('');
+  const entries = (logs || []).slice(0, 12).map(l => `<li><span class="log-agent ${['attacker', 'searcher', 'builder', 'hacker'].includes(l.agent) ? l.agent : ''}">${escape(l.agent)}</span>Run ${escape(l.run)} · tick ${escape(l.tick)}: ${escape(l.text)}</li>`).join('');
   const body = `<p class="verdict-text ${status}">${escape(perf.verdict.text)}</p>${rows}<h4>Learning logs</h4>${entries ? `<ul class="learning-logs">${entries}</ul>` : '<p class="muted small">Agents log what they learn as attacks, fixes and reveals happen.</p>'}`;
   return { summary, body };
 }
 // End agent performance.
+// Keep the attempts list open across updates; it changes after every attempt.
+function renderHacker() {
+  const markup = hackerMarkup(state.hacker);
+  if (markup === lastHackerMarkup) return;
+  const open = $('hacker').querySelector('details')?.open;
+  $('hacker').innerHTML = markup; lastHackerMarkup = markup;
+  if (open) $('hacker').querySelector('details')?.setAttribute('open', '');
+}
 function renderPerformance() {
   if (!state.performance) return;
   const { summary, body } = performanceMarkup(state.performance, state.learningLogs);
@@ -177,7 +188,7 @@ function aiRunMarkup(run) {
 
 // Attack history: how each finished run turned out, newest first, so the
 // dashboard shows the Attacker switching paths once a fix blocks one.
-const CONTROL_TEXT = {storagePrivate:'private storage', requireMfa:'MFA', databaseLeastPrivilege:'least-privilege database role'};
+const CONTROL_TEXT = {storagePrivate:'private storage', requireMfa:'MFA', databaseLeastPrivilege:'least-privilege database role', accountLockout:'account lockout', metadataProtection:'metadata protection', secretsManager:'secret storage'};
 function attackHistoryMarkup(history) {
   if (!Array.isArray(history) || !history.length) return '';
   const rows = history.slice(0, 6).map(h => {
@@ -188,6 +199,26 @@ function attackHistoryMarkup(history) {
   return `<div class="attack-history"><h3>Attack history</h3><ol>${rows}</ol></div>`;
 }
 // End attack history.
+
+// Hacker: the automated outsider that learns by trial and error.
+const HACKER_RESULT = {breached:['Got through','succeeded'], blocked:['Blocked','blocked'], tripped:['Tripwire','blocked'], nothing:['Nothing','blocked']};
+const hackerAttack = a => `${a.chain.join(' → ')} (${a.pace}, ${a.spread === 'rotate' ? 'rotating addresses' : 'one address'})`;
+const signedReward = n => `${n > 0 ? '+' : ''}${n}`;
+function hackerMarkup(h) {
+  if (!h) return '';
+  const status = !h.available ? 'Simulator only' : !h.enabled ? 'Off' : h.current ? 'Attacking' : 'Learning';
+  const last = (h.recent || [])[0];
+  const now = h.current ? `Attacking: ${hackerAttack(h.current)}, part ${h.current.step} of ${h.current.parts}.`
+    : last ? `Last attempt: ${(HACKER_RESULT[last.result] || HACKER_RESULT.nothing)[0]} · ${hackerAttack(last)} · reward ${signedReward(last.reward)}.`
+    : 'Not started. Start it and watch it learn which attacks pay off.';
+  const favorite = h.best ? `Favorite: ${hackerAttack(h.best)} · value ${signedReward(h.best.value)} after ${h.best.tries} tr${h.best.tries === 1 ? 'y' : 'ies'}.` : 'No favorite attack yet.';
+  const rows = (h.recent || []).map(a => { const [text, tone] = HACKER_RESULT[a.result] || HACKER_RESULT.nothing; return `<li><span class="history-result ${tone}">${text}</span> ${escape(signedReward(a.reward))} · ${escape(a.chain.join(' → '))} <span class="muted">· ${escape(a.pace)}${a.spread === 'rotate' ? ', rotating' : ''}${a.explored ? ', exploring' : ''}</span></li>`; }).join('');
+  const runs = (h.runs || []).filter(r => r.attempts).map(r => `Run ${escape(r.run)}: ${r.firstBreachAt ? `attempt ${escape(r.firstBreachAt)}` : 'none'}`).join(' · ');
+  const trend = h.trend ? `<p class="small muted">Average reward: ${escape(signedReward(h.trend.early))} in its first five attempts, ${escape(signedReward(h.trend.recent))} in its latest ten (${escape(h.trend.attempts)} total).</p>` : '';
+  const toggle = h.enabled ? ['stop', 'Stop Hacker'] : ['start', 'Start Hacker'];
+  return `<div class="agent hacker"><div class="agent-symbol" aria-hidden="true">✦</div><div><div class="agent-heading"><h3>Hacker</h3><span class="agent-status">${escape(status)}</span></div><p class="clamp" title="${escape(now)}">${escape(now)}</p><p class="clamp" title="${escape(favorite)}">${escape(favorite)}</p><div class="traffic-buttons"><button class="compact" data-hacker="${toggle[0]}">${toggle[1]}</button><button class="compact quiet" data-hacker="forget">Forget learning</button></div><details class="scenario-about"><summary>How it learns · recent attempts</summary><p>An automated outsider, not an AI model. It scores each attempt (+1 per weak spot it gets through, +1 for data, −1 for nothing, minus a little for blocks, tripwires, rotating addresses and time) and repeats what pays, exploring now and then. It keeps what it learned across resets. It only uses the allowlisted steps, inside the simulation.</p>${trend}${runs ? `<p class="small muted">First breach by run: ${runs}</p>` : ''}${rows ? `<ol class="hacker-attempts">${rows}</ol>` : ''}</details></div></div>`;
+}
+// End hacker.
 
 // Live traffic: users online, hidden bots, the Searcher's score and the tripwire log.
 const BEHAVIOR_TEXT = {'credential-stuffing':'credential stuffing','storage-scraping':'storage scraping','request-flood':'request flood'};
@@ -241,8 +272,9 @@ function renderFindings() {
 
 function renderEvents() {
   const events = state.events.filter(e => filter === 'all' || (filter === 'security' ? e.kind !== 'normal' : e.kind === 'normal')).slice(0,24);
-  const label = id => state.nodes.find(n=>n.id===id)?.label || id;
-  $('events').innerHTML = events.map(e => `<tr><td>${escape(e.tick)}</td><td>${escape(label(e.source))} <span class="muted">→</span> ${escape(label(e.target))}</td><td>${escape(e.action)}</td><td>${escape(e.protocol)}</td><td><span class="event-kind ${escape(e.kind)}">${escape(e.outcome)}</span></td></tr>`).join('') || '<tr><td colspan="5">No matching events yet.</td></tr>';
+  // Hacker traffic enters through the client edge; name it so it can be told apart from users.
+  const label = (id, e) => e.actor === 'hacker' && id === 'client' ? `Hacker ${e.clientId}` : state.nodes.find(n=>n.id===id)?.label || id;
+  $('events').innerHTML = events.map(e => `<tr><td>${escape(e.tick)}</td><td>${escape(label(e.source, e))} <span class="muted">→</span> ${escape(label(e.target, e))}</td><td>${escape(e.action)}</td><td>${escape(e.protocol)}</td><td><span class="event-kind ${escape(e.kind)}">${escape(e.outcome)}</span></td></tr>`).join('') || '<tr><td colspan="5">No matching events yet.</td></tr>';
 }
 
 function inspectResource() {
@@ -254,10 +286,16 @@ function inspectResource() {
   $('resource-detail').textContent = `${node.description} ${count ? `${count} open finding${count===1?'':'s'}.` : 'No open findings for this resource.'} ${canEditControls(node.id)?`Status: ${node.status || 'active'} · Action: ${node.action || 'normal'}.`:''}`;
 }
 $('pause').addEventListener('click',()=>command('running',{running:!state.running}, state.running?'Traffic generation paused.':'Traffic generation resumed.'));
-$('reset').addEventListener('click',()=>command('reset',{},'Lab reset and paused. All policies, findings, and counters returned to the vulnerable baseline. Press Resume to start traffic.'));
+$('reset').addEventListener('click',()=>command('reset',{},mode()==='simulation'?'Lab reset and paused on a newly randomized cloud. Findings and counters are cleared; the Hacker keeps what it learned. Press Resume to start traffic.':'Lab reset and paused. All policies, findings, and counters returned to the vulnerable baseline. Press Resume to start traffic.'));
 $('traffic-apply').addEventListener('click',()=>{
   const users=Number($('traffic-users').value), bots=$('traffic-bots').checked;
   command('traffic',{users,bots},`Traffic set: ${users} user${users===1?'':'s'} online${bots?', with hidden bots among them. Run the Searcher, then reveal.':'.'}`);
+});
+$('hacker').addEventListener('click',event=>{
+  const button=event.target.closest('[data-hacker]');
+  if(!button)return;
+  if(button.dataset.hacker==='forget')command('hacker/forget',{},'Hacker learning wiped. Its next attempts start from scratch.');
+  else command('hacker',{enabled:button.dataset.hacker==='start'},button.dataset.hacker==='start'?'Hacker started. It attacks every few ticks and learns which attacks pay off.':'Hacker stopped. It keeps what it learned.');
 });
 $('bots-reveal').addEventListener('click',()=>command('bots/reveal',{},'Hidden bots revealed. The score compares them with the newest Searcher run.'));
 $('auto-blocks').addEventListener('click',event=>{
@@ -377,7 +415,7 @@ $('node-form').addEventListener('submit',async event=>{
 const canvas = $('topology'), ctx = canvas.getContext('2d');
 let width=600,height=400,yaw=-.42,pitch=.56,zoom=1,panX=0,panY=0,hitNodes=[];
 const camera=()=>({width,height,yaw,pitch,zoom,panX,panY});
-const colors={normal:'#76e7c1',attack:'#ff7e8b',blocked:'#f4c373'};
+const colors={normal:'#76e7c1',attack:'#ff7e8b',blocked:'#f4c373',hacker:'#c49bff'};
 new ResizeObserver(entries=>{
   const rect=entries[0].contentRect; width=rect.width; height=rect.height;
   const dpr=Math.min(devicePixelRatio || 1,2);
@@ -414,7 +452,7 @@ function render(now) {
     particles=active;
     for(const p of active) {
       const a=nodes.get(p.event.source),b=nodes.get(p.event.target);if(!a||!b)continue;
-      const t=Math.min((now-p.start)/p.duration,1),color=colors[p.event.kind] || colors.normal;
+      const t=Math.min((now-p.start)/p.duration,1),color=p.event.actor==='hacker'&&p.event.kind==='attack'?colors.hacker:colors[p.event.kind] || colors.normal;
       const from=project(a.x,a.y,a.z),to=project(b.x,b.y,b.z);
       line(from,to,color+'55',p.event.kind==='normal'?1:2,p.event.kind==='blocked'?[5,4]:[]);
       // Blocked events stop before the target, instead of implying successful entry.

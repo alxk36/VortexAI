@@ -47,7 +47,30 @@ const REMEDIATIONS = {
     description: 'Keep application reads available, but remove administrative export permission from the application service identity.',
     tradeoff: 'Administrative exports require a separate approved identity. This limits the blast radius; it does not revoke the stolen application token.',
   },
+  accountLockout: {
+    title: 'Lock accounts after repeated failed sign-ins',
+    description: 'After five failed sign-ins in a short window, lock the account for a cool-down period, whichever addresses the attempts come from. This also covers the legacy sign-in.',
+    tradeoff: 'Attackers can deliberately lock out real users; pair it with alerts and a self-service unlock.',
+  },
+  metadataProtection: {
+    title: 'Require session tokens for the metadata service',
+    description: 'Block application requests to the instance metadata address and require a session token, so a forged request cannot read the service credentials.',
+    tradeoff: 'Older tools that read metadata without a token must be updated first.',
+  },
+  secretsManager: {
+    title: 'Move the embedded key to a secrets store and rotate it',
+    description: 'Remove the admin API key from the public app bundle, rotate it, and load secrets at runtime from a secrets store.',
+    tradeoff: 'Deployments need access to the secrets store; anything still using the old key stops working until updated.',
+  },
 };
+
+// Every control the in-memory cloud models. Each run starts with some of them
+// missing (the weak spots). The classic layout is the original three; the
+// randomized layout draws three or four from the whole pool every reset.
+export const WEAK_SPOT_POOL = Object.freeze(['storagePrivate', 'requireMfa', 'databaseLeastPrivilege', 'accountLockout', 'metadataProtection', 'secretsManager']);
+const CLASSIC_WEAK_SPOTS = Object.freeze(['storagePrivate', 'requireMfa', 'databaseLeastPrivilege']);
+const LOCKOUT_LIMIT = 5;    // failed sign-ins on one account that lock it, when lockout is on
+const LOCKOUT_WINDOW = 30;  // ticks the failures are remembered; a successful sign-in clears them
 
 import { TrafficModel } from './traffic.mjs';
 
@@ -55,7 +78,7 @@ import { TrafficModel } from './traffic.mjs';
 // and the AI Attacker may compose its own chains from the same list. A step
 // only changes in-memory state; `requires` names a step that must come earlier.
 // Descriptions say what a step attempts, never which control would stop it.
-const ATTACK_ACTIONS = Object.freeze([
+export const ATTACK_ACTIONS = Object.freeze([
   { id: 'discover', description: 'Probe the public gateway to find exposed resources.', requires: [], nodes: ['attacker', 'gateway'] },
   { id: 'storage-list', description: 'List objects in object storage without signing in.', requires: [], nodes: ['attacker', 'storage'] },
   { id: 'storage-read', description: 'Read an object from object storage without signing in.', requires: [], nodes: ['attacker', 'storage'] },
@@ -66,6 +89,11 @@ const ATTACK_ACTIONS = Object.freeze([
   { id: 'app-flaw-request', description: 'Abuse an application flaw so the request runs as the app service identity.', requires: ['token-replay'], nodes: ['gateway', 'app'] },
   { id: 'db-admin-export', description: 'Use the service identity to run an administrative database export.', requires: ['app-flaw-request'], nodes: ['app', 'db'] },
   { id: 'exfiltrate', description: 'Send the exported data out to the attacker.', requires: ['db-admin-export'], nodes: ['db'] },
+  { id: 'password-spray', description: 'Guess common passwords against the administrator account until one works.', requires: [], nodes: ['attacker', 'iam'] },
+  { id: 'metadata-ssrf', description: 'Trick the application into fetching the cloud metadata service and returning its service credentials.', requires: ['discover'], nodes: ['attacker', 'app'] },
+  { id: 'cloud-key-use', description: 'Use stolen service credentials to read stored objects directly.', requires: ['metadata-ssrf'], nodes: ['attacker', 'storage'] },
+  { id: 'bundle-scrape', description: 'Read the public web app bundle and look for embedded keys.', requires: [], nodes: ['attacker', 'gateway'] },
+  { id: 'api-key-use', description: 'Call the admin API with a key found in the app bundle.', requires: ['bundle-scrape'], nodes: ['attacker', 'app'] },
 ]);
 const ACTION_BY_ID = Object.fromEntries(ATTACK_ACTIONS.map(a => [a.id, a]));
 const SCENARIO_ACTIONS = Object.freeze({
@@ -91,7 +119,13 @@ const clone = (value) => structuredClone(value);
 const timeAt = (tick) => new Date(tick * 1000).toISOString().slice(11, 19);
 
 export class Simulation {
-  constructor({ random = Math.random } = {}) { this._traffic = new TrafficModel({ random }); this.reset(); }
+  /** layout 'classic' always starts with the original three weak spots;
+   * 'random' draws a different set of three or four on every reset. */
+  constructor({ random = Math.random, layout = 'classic' } = {}) {
+    if (!['classic', 'random'].includes(layout)) throw new Error('layout must be classic or random.');
+    this._layout = layout; this._random = random;
+    this._traffic = new TrafficModel({ random }); this.reset();
+  }
 
   /** Reset is a new lab run: controls, findings, counters, and queues are cleared. */
   reset() {
@@ -104,7 +138,9 @@ export class Simulation {
     this._failures = new Map();
     this._active = null;
     this._nodeSettings = Object.fromEntries(NODES.map(n=>[n.id,{status:'active',action:'normal'}]));
-    this._policies = { storagePrivate: false, requireMfa: false, databaseLeastPrivilege: false };
+    this._weakSpots = this._layout === 'random' ? this._drawWeakSpots() : [...CLASSIC_WEAK_SPOTS];
+    this._policies = Object.fromEntries(WEAK_SPOT_POOL.map(key => [key, !this._weakSpots.includes(key)]));
+    this._accountFailures = new Map();
     this._metrics = { totalEvents: 0, attackEvents: 0, blockedEvents: 0, attackAttempts: 0 };
     this._agents = {
       attacker: { status: 'Ready', detail: 'Choose a bounded scenario to test the virtual cloud.' },
@@ -113,6 +149,14 @@ export class Simulation {
     };
     this._traffic.reset();
     return this.snapshot();
+  }
+
+  /** Three or four controls start missing, chosen at random from the pool. */
+  _drawWeakSpots() {
+    const pool = [...WEAK_SPOT_POOL];
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(this._random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+    const count = this._random() < 0.5 ? 3 : 4;
+    return WEAK_SPOT_POOL.filter(key => pool.slice(0, count).includes(key));
   }
 
   /** Clone externally visible state so callers cannot mutate policies, queues,
@@ -127,6 +171,8 @@ export class Simulation {
       findings: this._findings,
       recommendations: this._recommendations,
       policies: this._policies,
+      // Ground truth for scoring only: agent contexts never include it.
+      weakSpots: this._weakSpots,
       scenarios: SCENARIOS,
       attackActions: ATTACK_ACTIONS.map(({ id, description, requires }) => ({ id, description, requires: [...requires] })),
       activeScenario: this._active ? {
@@ -286,50 +332,115 @@ export class Simulation {
   /** Scripted scenarios are fixed lists of the same steps the AI Attacker may compose. */
   _scenarioSteps(id) { return SCENARIO_ACTIONS[id].map(action => this._attackStep(action)); }
 
-  /** One allowlisted attack step: it only changes in-memory state and emits events. */
+  /** One allowlisted attack step for a scenario or AI chain: every part of it runs in one tick. */
   _attackStep(actionId) {
     const attack = (fields) => this._emit({ kind: 'attack', authenticated: false, bytes: 128, ...fields });
+    const parts = this._attackParts(actionId);
+    return context => { for (const part of parts) part(context, attack); };
+  }
+
+  /** The Hacker's version of a chain: the same steps, split into parts it can pace over ticks. */
+  hackerParts(actions) {
+    const problem = planProblem(actions);
+    if (problem) throw new Error(problem);
+    return actions.flatMap(actionId => this._attackParts(actionId).map(run => ({ actionId, run })));
+  }
+
+  /** The Hacker enters from the internet like any client, with its own address,
+   * so the tripwire, paused nodes and the Searcher's client view all apply to it. */
+  hackerEmit(fields, clientId) {
+    const fromOutside = id => id === 'attacker' ? 'client' : id;
+    const event = { kind: 'attack', authenticated: false, bytes: 128, ...fields, source: fromOutside(fields.source), target: fromOutside(fields.target), clientId, actor: 'hacker' };
+    const stopped = [event.source, event.target].some(id => this._nodeSettings[id]?.status === 'paused' || this._nodeSettings[id]?.action === 'quarantine');
+    if (this._traffic.isBlocked(clientId, this._tick)) Object.assign(event, { outcome: 'denied', authenticated: false, control: 'autoBlock', bytes: 64, detail: 'Searcher tripwire is blocking this address.' });
+    else if (stopped) { Object.assign(event, { outcome: 'denied', authenticated: false, detail: 'The node is paused or quarantined.' }); delete event.control; }
+    if (event.outcome === 'denied') event.kind = 'blocked';
+    return this._emit(event);
+  }
+
+  /** An account is locked while lockout is on and it has enough recent failures. */
+  _lockedOut(principal) {
+    if (!this._policies.accountLockout) return false;
+    return (this._accountFailures.get(principal) ?? []).filter(e => this._tick - e.tick <= LOCKOUT_WINDOW).length >= LOCKOUT_LIMIT;
+  }
+
+  /** The parts of one allowlisted step. Each part emits one event through `attack`,
+   * which returns the recorded event; later steps depend on what was recorded. */
+  _attackParts(actionId) {
+    const one = run => [run];
     switch (actionId) {
-      case 'discover': return () => attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'discover', outcome: 'allowed', detail: 'Synthetic discovery identifies the lab storage resource; no real host is contacted.' });
-      case 'storage-list': return context => {
+      case 'discover': return one((context, attack) => attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'discover', outcome: 'allowed', detail: 'Synthetic discovery identifies the lab storage resource; no real host is contacted.' }));
+      case 'storage-list': return one((context, attack) => {
         context.blocked = this._policies.storagePrivate;
         attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'list-objects', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'storagePrivate', detail: context.blocked ? 'Private access denies the anonymous object listing.' : 'The public storage policy permits anonymous object listing.' });
-      };
-      case 'storage-read': return context => {
+      });
+      case 'storage-read': return one((context, attack) => {
         context.blocked = this._policies.storagePrivate;
         attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'read-object', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'storagePrivate', bytes: context.blocked ? 128 : 12000, detail: context.blocked ? 'Anonymous object reads are denied by the new private-access policy.' : 'Anonymous access reads a synthetic customer object. No real data exists.' });
-      };
-      case 'password-guess': return context => {
+      });
+      case 'password-guess': return one((context, attack) => {
         context.guesses = (context.guesses ?? 0) + 1;
         attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: 'denied', kind: 'blocked', principal: 'lab-admin', authentication: 'password', detail: `Synthetic password attempt ${context.guesses} is rejected.` });
-      };
-      case 'stolen-password-signin': return context => {
-        context.blocked = this._policies.requireMfa;
-        context.session = !context.blocked;
-        attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'lab-admin', authentication: 'password', authenticated: !context.blocked, control: 'requireMfa', detail: context.blocked ? 'A valid modeled password is insufficient: the MFA requirement denies the session.' : 'A modeled stolen password creates an administrator session after repeated failures.' });
-      };
-      case 'admin-request': return context => {
+      });
+      case 'stolen-password-signin': return one((context, attack) => {
+        // MFA is checked first; without it, a locked account still refuses the right password.
+        const locked = !this._policies.requireMfa && this._lockedOut('lab-admin');
+        context.blocked = this._policies.requireMfa || locked;
+        const event = locked
+          ? attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: 'denied', kind: 'blocked', principal: 'lab-admin', authentication: 'password', authenticated: false, control: 'accountLockout', detail: 'The account is locked after repeated failed sign-ins; even the right password is refused.' })
+          : attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'lab-admin', authentication: 'password', authenticated: !context.blocked, control: 'requireMfa', detail: context.blocked ? 'A valid modeled password is insufficient: the MFA requirement denies the session.' : 'A modeled stolen password creates an administrator session after repeated failures.' });
+        context.session = event.outcome === 'allowed';
+      });
+      case 'admin-request': return one((context, attack) => {
         // Session availability is the outcome of the earlier stolen-password sign-in.
         const denied = !context.session;
         attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'admin-request', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'lab-admin', authenticated: !denied, detail: denied ? 'No modeled administrator session is available; the request is denied.' : 'The unauthorized actor uses the synthetic administrator session.' });
-      };
-      case 'token-replay': return context => {
-        context.token = true;
-        attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'token-replay', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'Scenario assumption: an external actor holds a stolen low-privilege application token.' });
-      };
-      case 'app-flaw-request': return context => {
-        context.serviceIdentity = true;
-        attack({ source: 'gateway', target: 'app', protocol: 'HTTPS', action: 'application-request', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'A modeled application flaw lets this authenticated request invoke the service identity.' });
-      };
-      case 'db-admin-export': return context => {
+      });
+      case 'token-replay': return one((context, attack) => {
+        context.token = attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'token-replay', outcome: 'allowed', authenticated: true, principal: 'app-user', detail: 'Scenario assumption: an external actor holds a stolen low-privilege application token.' }).outcome === 'allowed';
+      });
+      case 'app-flaw-request': return one((context, attack) => {
+        const denied = context.token === false;
+        context.serviceIdentity = attack({ source: 'gateway', target: 'app', protocol: 'HTTPS', action: 'application-request', outcome: denied ? 'denied' : 'allowed', ...(denied ? { kind: 'blocked' } : {}), authenticated: !denied, principal: 'app-user', detail: denied ? 'Without a working token the request is refused.' : 'A modeled application flaw lets this authenticated request invoke the service identity.' }).outcome === 'allowed';
+      });
+      case 'db-admin-export': return one((context, attack) => {
+        const noIdentity = context.serviceIdentity === false;
         context.blocked = this._policies.databaseLeastPrivilege;
-        context.exported = !context.blocked;
-        attack({ source: 'app', target: 'db', protocol: 'SQL/TLS', action: 'admin-export', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', control: 'databaseLeastPrivilege', detail: context.blocked ? 'The application role has read-only permissions; administrative export is denied.' : 'The overly privileged application role performs an administrative data export.' });
-      };
-      case 'exfiltrate': return context => {
+        const denied = context.blocked || noIdentity;
+        context.exported = attack({ source: 'app', target: 'db', protocol: 'SQL/TLS', action: 'admin-export', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', ...(noIdentity && !context.blocked ? {} : { control: 'databaseLeastPrivilege' }), detail: context.blocked ? 'The application role has read-only permissions; administrative export is denied.' : noIdentity ? 'No service identity was obtained; the export never starts.' : 'The overly privileged application role performs an administrative data export.' }).outcome === 'allowed';
+      });
+      case 'exfiltrate': return one((context, attack) => {
         const denied = !context.exported;
         attack({ source: denied ? 'app' : 'db', target: denied ? 'logs' : 'attacker', protocol: denied ? 'AUDIT' : 'HTTPS', action: denied ? 'export-denied-audit' : 'export-response', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', authenticated: true, principal: 'app-service', bytes: denied ? 180 : 24000, detail: denied ? 'Audit records the blocked export. Application reads still work.' : 'The export is represented as a synthetic response to the external actor.' });
-      };
+      });
+      case 'password-spray': {
+        // Five common-password guesses, then the account's weak password, on the
+        // legacy sign-in that has no second factor. Only lockout stops it.
+        const guess = n => (context, attack) => attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: 'denied', kind: 'blocked', principal: 'lab-admin', authentication: 'legacy-password', detail: `Common-password guess ${n} is rejected.` });
+        const final = (context, attack) => {
+          const locked = this._lockedOut('lab-admin');
+          context.blocked = locked;
+          context.session = attack({ source: 'attacker', target: 'iam', protocol: 'HTTPS', action: 'sign-in', outcome: locked ? 'denied' : 'allowed', kind: locked ? 'blocked' : 'attack', principal: 'lab-admin', authentication: 'legacy-password', authenticated: !locked, control: 'accountLockout', detail: locked ? 'The account locked after repeated failures, so the right guess is refused.' : 'A guessed weak password works on the legacy sign-in, which has no second factor.' }).outcome === 'allowed';
+        };
+        return [1, 2, 3, 4, 5].map(guess).concat(final);
+      }
+      case 'metadata-ssrf': return one((context, attack) => {
+        context.blocked = this._policies.metadataProtection;
+        context.cloudKey = attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'metadata-request', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'metadataProtection', detail: context.blocked ? 'The metadata service requires a session token; the forged request returns nothing.' : 'A forged URL makes the application fetch its own cloud metadata and return the service credentials.' }).outcome === 'allowed';
+      });
+      case 'cloud-key-use': return one((context, attack) => {
+        const denied = !context.cloudKey;
+        attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'read-object', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'app-service', authenticated: !denied, bytes: denied ? 128 : 15000, ...(denied ? {} : { control: 'metadataProtection' }), detail: denied ? 'No stolen service credentials are available; the read is denied.' : 'Stolen service credentials read private objects directly, even if storage is private.' });
+      });
+      case 'bundle-scrape': return one((context, attack) => {
+        const leaked = !this._policies.secretsManager;
+        context.apiKey = attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'bundle-read', outcome: 'allowed', principal: 'anonymous', detail: leaked ? 'The public app bundle contains an embedded admin API key.' : 'The public app bundle holds no keys.' }).outcome === 'allowed' && leaked;
+      });
+      case 'api-key-use': return one((context, attack) => {
+        const denied = !context.apiKey;
+        context.blocked = denied;
+        attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'admin-api', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'api-key', authenticated: !denied, bytes: denied ? 128 : 9000, ...(denied && !this._policies.secretsManager ? {} : { control: 'secretsManager' }), detail: denied ? 'No valid key: the admin API refuses the request.' : 'The leaked key unlocks the admin API, which returns synthetic customer records.' });
+      });
       default: throw new Error('Unknown attack action.');
     }
   }
@@ -348,6 +459,7 @@ export class Simulation {
     const { kind: _label, ...observation } = event;
     this._observe(observation);
     if (event.clientId) this._traffic.observe(event, this);
+    return event;
   }
 
   // Detect from observed actions/identity/outcomes, never presentation labels.
@@ -358,6 +470,12 @@ export class Simulation {
       const history = this._failures.get(key) || [];
       history.push(event);
       this._failures.set(key, history.filter(item => event.tick - item.tick <= 12).slice(-8));
+      // Per-account count for lockout, from any address. Edge blocks never reached sign-in.
+      if (event.principal && event.control !== 'autoBlock') {
+        const failures = this._accountFailures.get(event.principal) || [];
+        failures.push(event);
+        this._accountFailures.set(event.principal, failures.filter(item => event.tick - item.tick <= LOCKOUT_WINDOW).slice(-10));
+      }
     }
     if (event.outcome === 'denied' && event.control) {
       const recommendation = this._recommendations.find(item => item.policyKey === event.control && item.applied);
@@ -374,11 +492,28 @@ export class Simulation {
     }
     if (event.target === 'iam' && event.action === 'sign-in' && event.authentication === 'password') {
       const failures = (this._failures.get(`${event.source}:${event.principal}`) || []).filter(item => event.tick - item.tick <= 12);
-      if (failures.length >= 3) this._diagnose('requireMfa', 'Password sign-in succeeds after repeated failures', 'high', 'iam', [...failures, event]);
+      // An administrator session from a password alone is a finding even without guessing first.
+      if (failures.length >= 3 || event.principal === 'lab-admin') this._diagnose('requireMfa', failures.length >= 3 ? 'Password sign-in succeeds after repeated failures' : 'Administrator signs in with a password alone', 'high', 'iam', [...failures, event]);
+    }
+    if (event.target === 'iam' && event.action === 'sign-in' && event.authentication === 'legacy-password') {
+      const failures = (this._accountFailures.get(event.principal) || []).filter(item => event.tick - item.tick <= LOCKOUT_WINDOW).slice(-5);
+      this._diagnose('accountLockout', 'Password guessing succeeds with no account lockout', 'high', 'iam', [...failures, event]);
     }
     if (event.target === 'db' && event.action === 'admin-export' && event.principal === 'app-service') {
       this._diagnose('databaseLeastPrivilege', 'Application identity can export administrative data', 'critical', 'db', [event]);
     }
+    if (event.target === 'app' && event.action === 'metadata-request') {
+      this._diagnose('metadataProtection', 'The application fetches cloud metadata for outsiders', 'critical', 'app', [event]);
+    }
+    // Service credentials should only ever be used from inside the application.
+    if (event.target === 'storage' && event.principal === 'app-service' && ['client', 'attacker'].includes(event.source)) {
+      this._diagnose('metadataProtection', 'The application fetches cloud metadata for outsiders', 'critical', 'app', [event]);
+    }
+    if (event.target === 'app' && event.action === 'admin-api' && event.principal === 'api-key') {
+      this._diagnose('secretsManager', 'A key from the public app bundle unlocks the admin API', 'critical', 'app', [event]);
+    }
+    // A successful sign-in resets that account's failure count, as real lockouts do.
+    if (event.action === 'sign-in' && event.principal) this._accountFailures.delete(event.principal);
   }
 
   _diagnose(policyKey, title, severity, nodeId, evidence) {

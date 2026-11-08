@@ -118,7 +118,7 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
         if (request.method !== 'GET') throw fail('Use GET for this endpoint.', 405);
         return sendJson(response, 200, await simulation.snapshot());
       }
-      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run', '/api/traffic', '/api/bots/reveal', '/api/unblock']);
+      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run', '/api/traffic', '/api/bots/reveal', '/api/unblock', '/api/hacker', '/api/hacker/forget']);
       if (mutations.has(path)) {
         if (request.method !== 'POST') throw fail('Use POST for this endpoint.', 405);
         const body = await readJson(request);
@@ -156,6 +156,17 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
           validateFields(body, ['clientId']);
           if (typeof body.clientId !== 'string' || body.clientId.length > 40) throw fail('A client address is required.');
           await simulation.unblockClient(body.clientId);
+        }
+        if (path === '/api/hacker') {
+          validateFields(body, ['enabled']);
+          if (typeof body.enabled !== 'boolean') throw fail('enabled must be true or false.');
+          if (!simulation.setHacker) throw fail('The Hacker is unavailable.');
+          await simulation.setHacker(body.enabled);
+        }
+        if (path === '/api/hacker/forget') {
+          validateFields(body, []);
+          if (!simulation.forgetHacker) throw fail('The Hacker is unavailable.');
+          await simulation.forgetHacker();
         }
         if (path === '/api/ai/run') {
           validateFields(body,['agent']);
@@ -201,7 +212,8 @@ if (isDirectRun) {
     console.error('PORT must be an integer from 1 to 65535.');
     process.exitCode = 1;
   } else {
-    const server = createServer({simulation:new Runtime()});
+    // Every reset draws a new set of weak spots in the in-memory cloud.
+    const server = createServer({simulation:new Runtime({simulation:new Simulation({layout:'random'})})});
     server.on('error', (error) => {
       console.error(`VortexAI could not start: ${error.message}`);
       process.exitCode = 1;

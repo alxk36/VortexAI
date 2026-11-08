@@ -11,6 +11,7 @@ export const MAX_USERS = 60;
 const BEHAVIORS = Object.freeze(['credential-stuffing', 'storage-scraping', 'request-flood']);
 const WINDOW_TICKS = 40;        // per-client history kept for the activity summary
 const FLOOD_LIMIT = 8;          // requests from one client in one tick that trip the breaker
+const SIGNIN_LIMIT = 3;         // failed sign-ins from one client in one tick that trip it
 const BLOCK_TICKS = 20;         // how long the tripwire blocks a flooding client
 const CLIENT_SUMMARY_CAP = 70;
 const CAPACITY = 40;            // allowed gateway requests per tick before the whole system pauses
@@ -127,19 +128,29 @@ export class TrafficModel {
     list.push({ tick, action: event.action, target: event.target, outcome: event.outcome, principal: event.principal, authenticated: event.authenticated === true });
     while (list.length && list[0].tick <= tick - WINDOW_TICKS) list.shift();
     this.history.set(event.clientId, list);
-    if (event.target !== 'gateway' || event.action !== 'request' || this.isBlocked(event.clientId, tick)) return;
-    const thisTick = list.filter(e => e.tick === tick && e.target === 'gateway' && e.action === 'request').length;
-    if (thisTick < FLOOD_LIMIT) return;
-    this.blocks.set(event.clientId, tick + BLOCK_TICKS);
-    const reason = `${thisTick} requests in one tick (limit ${FLOOD_LIMIT})`;
+    if (this.isBlocked(event.clientId, tick)) return;
+    // Speed is what trips it: too many requests, or too many failed sign-ins, in one tick.
+    const thisTick = list.filter(e => e.tick === tick);
+    if (event.target === 'gateway' && event.action === 'request') {
+      const requests = thisTick.filter(e => e.target === 'gateway' && e.action === 'request').length;
+      if (requests >= FLOOD_LIMIT) this._trip(event.clientId, tick, `${requests} requests in one tick (limit ${FLOOD_LIMIT})`, sim);
+    } else if (event.action === 'sign-in' && event.outcome === 'denied') {
+      const failures = thisTick.filter(e => e.action === 'sign-in' && e.outcome === 'denied').length;
+      if (failures >= SIGNIN_LIMIT) this._trip(event.clientId, tick, `${failures} failed sign-ins in one tick (limit ${SIGNIN_LIMIT})`, sim);
+    }
+  }
+
+  /** Block one client for a while and log it once, with a repeat count. */
+  _trip(clientId, tick, reason, sim) {
+    this.blocks.set(clientId, tick + BLOCK_TICKS);
     // One log entry per client: a repeat offender moves to the top with a count.
-    const earlier = this.autoBlocks.findIndex(b => b.clientId === event.clientId);
+    const earlier = this.autoBlocks.findIndex(b => b.clientId === clientId);
     const count = earlier >= 0 ? (this.autoBlocks[earlier].count ?? 1) + 1 : 1;
     if (earlier >= 0) this.autoBlocks.splice(earlier, 1);
-    this.autoBlocks.unshift({ clientId: event.clientId, tick, untilTick: tick + BLOCK_TICKS, reason, count });
+    this.autoBlocks.unshift({ clientId: clientId, tick, untilTick: tick + BLOCK_TICKS, reason, count });
     this.autoBlocks = this.autoBlocks.slice(0, 12);
     const again = count > 1 ? ` again (blocked ${count} times)` : '';
-    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Blocked ${event.clientId}${again}: ${reason}. Auto-expires in ${BLOCK_TICKS} ticks.` };
+    if (this.overloadedTick !== tick) sim._agents.searcher = { status: 'Auto-blocked client', detail: `Blocked ${clientId}${again}: ${reason}. Auto-expires in ${BLOCK_TICKS} ticks.` };
   }
 
   // Pause the whole model, not just this client. Resume remains an admin action.

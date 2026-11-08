@@ -53,6 +53,18 @@ Missing credentials, unavailable services, refusals, timeouts, incomplete replie
 
 The result includes `agent`, `mode` (`model` or `fallback`), `provider`, `model` (the requested model), optional `servedBy` identifying the validated serving model, the seven decision fields, and a safe fallback reason where applicable. The dashboard highlights when the serving model differs from the requested model. A configured key or successful health response is not a successful model inference.
 
+## Memory across runs
+
+Each Claude agent starts a run with short hints from earlier runs, never with control names it would not otherwise see. The Attacker gets `earlierRuns`: which path it tried and whether it got through. The Searcher and Builder get `notes`: their own last six learning-log lines from earlier runs. Prompts tell all three that the cloud is re-randomized every run, so these are hints, not facts about the current run. This is memory, not training: the model itself never changes.
+
+## The Hacker (no model)
+
+`src/hacker.mjs` is a fourth, non-LLM agent that learns by trial and error in the in-memory simulator. Each attack it tries is a valid chain of catalog steps plus a pace (`fast` runs the chain in one tick, `slow` runs one part per tick) and a spread (one address, or rotating RFC 5737 `192.0.2.x` addresses). Its reward is +1 per weak spot it gets through and +1 for data, or −1 for nothing, minus 0.5 per control that blocked a step, 1 for tripping the tripwire, 0.3 for rotating addresses and 0.05 per tick. Each result moves that attack's value 35% of the way toward the reward. It repeats its best attack, and explores a variation or a fresh chain 20% of the time, or whenever nothing has a positive value. Values survive lab resets; **Forget learning** wipes them.
+
+Containment: it can only pick step ids from the simulator's catalog, enters through the client edge like any user (so the tripwire, paused nodes and the Searcher's client view all apply), and never runs in the Docker lab. Its successes on fixed paths count against the Builder, and its attempts count toward the Searcher's flag rate.
+
+Each simulator reset draws three or four weak spots from six controls: private storage, MFA, least-privilege database role, account lockout, metadata protection and secret storage. The Docker lab keeps its fixed three.
+
 ## Verification
 
 From `source/`, `node --test` runs the full suite, including role redaction, repeated boundary sanitization, composed-chain validation, suspect scoring, model selection, HTTP construction, missing-key behavior, refusal/timeout fallback, bounded responses, and token checks. Provider responses are mocked; these tests make no paid API call.
