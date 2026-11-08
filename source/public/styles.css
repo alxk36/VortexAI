@@ -37,3 +37,5 @@ h1{font-size:24px;letter-spacing:-.5px}
 .verdict.defended,.verdict.at-risk,.verdict.failing,.history-result.succeeded,.history-result.blocked,.origin-tag.internal,.origin-tag.external,.event-kind.attack,.event-kind.blocked,.event-kind.normal{background:none}
 .performance h4{text-transform:none;letter-spacing:0;font-size:11px;color:var(--text)}
 .demo-seed{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}.demo-seed input{width:58px;font:inherit;color:var(--text);background:#192536;border:1px solid #34465c;border-radius:2px;padding:6px 8px}.session-actions{align-items:center;flex-wrap:wrap}
+.resource-inspector{grid-template-columns:auto minmax(0,1fr) auto auto}
+@media(max-width:900px){.resource-inspector{grid-template-columns:auto minmax(0,1fr)}.resource-inspector #edit-node,.resource-inspector #connect-node{grid-column:auto}}

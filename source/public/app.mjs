@@ -1,5 +1,5 @@
 // The browser renders server-owned state and requests named, bounded lab operations.
-// Only camera/selection/layout are browser-owned. Polling, command handling,
+// Camera, selection, layout, and added diagram links are browser-owned. Polling, command handling,
 // panels, the node editor, and canvas gestures are organized in that order below.
 import {projectPoint, screenToPlane, clampTranslation, sanitizeLayout, orbitCamera, nodesInRect} from './grid-math.mjs';
 const $ = (id) => document.getElementById(id);
@@ -8,6 +8,8 @@ let state, busy = false, filter = 'all', selected = '', lastTick = -1, commandVe
 let seenEvents = new Set(), particles = [], lastFindingMarkup = '';
 let selectedNodes = new Set(), layout = {}, lastMode = '', lastAgentsMarkup = '', lastAiMarkup = '', lastHistoryMarkup = '', lastTrafficMarkup = '', lastTrafficConfig = '', lastPerfSummary = '', lastPerfBody = '', lastHackerMarkup = '', dialogNode = '';
 const layoutKey = mode => `vortexai.node-layout.v2.${mode || 'simulation'}`;
+const connectionsKey = mode => `vortexai.diagram-connections.v1.${mode || 'simulation'}`;
+let customConnections=[], pendingConnection='', connectionPointer=null;
 const mode = () => state?.runtime?.mode || 'simulation';
 const serviceNodeIds = new Set(['gateway','lb','app','storage','iam','db']);
 const canEditControls = id => mode()==='simulation' || serviceNodeIds.has(id);
@@ -15,6 +17,48 @@ function visualNode(node) { return {...node, ...layout[node.id]}; }
 function saveLayout() {
   try { localStorage.setItem(layoutKey(mode()), JSON.stringify(layout)); }
   catch { $('message').textContent = 'The layout changed, but browser storage is unavailable. It will reset on refresh.'; }
+}
+// Added links are diagram annotations, not routes or permission changes. Treat
+// saved browser data as untrusted and keep only unique pairs of current nodes.
+function connectionKey(source,target){return JSON.stringify([source,target].sort());}
+function sanitizeConnections(value,nodes,edges=[]) {
+  if(!Array.isArray(value))return [];
+  const ids=new Set(nodes.map(n=>n.id)),seen=new Set(edges.map(e=>connectionKey(e.source,e.target))),clean=[];
+  for(const edge of value.slice(0,512)) {
+    if(!edge||typeof edge.source!=='string'||typeof edge.target!=='string'||edge.source===edge.target||!ids.has(edge.source)||!ids.has(edge.target))continue;
+    const key=connectionKey(edge.source,edge.target);
+    if(seen.has(key))continue;
+    seen.add(key);clean.push({source:edge.source,target:edge.target});
+  }
+  return clean;
+}
+function saveConnections() {
+  try {localStorage.setItem(connectionsKey(mode()),JSON.stringify(customConnections));return true;}
+  catch {return false;}
+}
+function cancelConnection(message='Connection canceled.') {
+  if(!pendingConnection)return;
+  pendingConnection='';connectionPointer=null;
+  $('message').textContent=message;inspectResource();updateCursor();
+}
+function connectNode(id) {
+  const node=state?.nodes.find(n=>n.id===id);
+  if(!node){cancelConnection();return;}
+  if(!pendingConnection) {
+    pendingConnection=id;connectionPointer=null;
+    $('message').textContent=`Connection started at ${node.label}. Ctrl+Alt-click another node to finish; Escape cancels.`;
+  } else {
+    const source=pendingConnection,from=state.nodes.find(n=>n.id===source);
+    pendingConnection='';connectionPointer=null;
+    if(source===id)$('message').textContent='Connection canceled: choose two different nodes.';
+    else if([...state.edges,...customConnections].some(e=>connectionKey(e.source,e.target)===connectionKey(source,id)))$('message').textContent='These nodes are already connected. Ready for a new connection.';
+    else if(from) {
+      customConnections.push({source,target:id});
+      const saved=saveConnections();
+      $('message').textContent=`Added diagram link: ${from.label} — ${node.label}.${saved?' Ready for a new connection.':' Browser storage is unavailable; this link lasts for this visit.'}`;
+    }
+  }
+  inspectResource();updateCursor();
 }
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -60,6 +104,8 @@ function renderControls() {
   $('environment-mode').disabled = busy || Boolean(state?.activeScenario);
   $('environment-mode').value = mode();
   $('edit-node').disabled = !selected || busy;
+  $('connect-node').disabled = !selected || busy;
+  $('clear-connections').disabled = customConnections.length===0;
   document.querySelectorAll('[data-ai]').forEach(button => { button.disabled = busy || Boolean(state?.activeScenario); });
   const trafficLocked = busy || !state || mode() !== 'simulation' || Boolean(state?.activeScenario);
   $('traffic-apply').disabled = trafficLocked;
@@ -81,12 +127,14 @@ function update(next) {
   const nextMode = next.runtime?.mode || 'simulation';
   const changedMode = nextMode !== lastMode;
   const reset = changedMode || next.tick < lastTick || (next.metrics.totalEvents === 0 && state?.metrics.totalEvents > 0);
-  if (reset) { seenEvents.clear(); particles = []; }
+  if (reset) { seenEvents.clear(); particles = []; pendingConnection='';connectionPointer=null; }
   if (changedMode) cancelDrag();
   state = next;
   if (first || changedMode) {
     try { layout = sanitizeLayout(JSON.parse(localStorage.getItem(layoutKey(nextMode)) || '{}'), state.nodes.map(n=>n.id)); }
     catch { layout = {}; }
+    try {customConnections=sanitizeConnections(JSON.parse(localStorage.getItem(connectionsKey(nextMode))||'[]'),state.nodes,state.edges);}
+    catch {customConnections=[];}
     lastMode = nextMode;
     $('scenarios').innerHTML = state.scenarios.map((s,i) => `<article class="scenario"><h3>${escape(s.name)}</h3><details class="scenario-about"><summary>What it does</summary><p>${escape(s.description)}</p></details><button data-scenario="${escape(s.id)}">${nextMode==='lab'?'Run in the lab':'Run'}</button></article>`).join('');
     $('resource').innerHTML = '<option value="">Select a node…</option>' + state.nodes.map(n => `<option value="${escape(n.id)}">${escape(n.label)}</option>`).join('');
@@ -94,6 +142,8 @@ function update(next) {
     $('resource').value=selected;
     if ($('node-dialog').open) $('node-dialog').close();
   }
+  customConnections=sanitizeConnections(customConnections,state.nodes,state.edges);
+  if(pendingConnection&&!state.nodes.some(n=>n.id===pendingConnection)){pendingConnection='';connectionPointer=null;}
   if (!first && !reset && !reducedMotion) {
     for (const event of state.events) {
       if (!seenEvents.has(event.id)) particles.push({event,start:performance.now(),duration:1400});
@@ -304,7 +354,11 @@ function renderEvents() {
 function inspectResource() {
   const node = state?.nodes.find(n=>n.id===selected);
   $('edit-node').disabled=!node || busy;
-  $('selection-hint').textContent = selectedNodes.size ? `${selectedNodes.size} SELECTED · CTRL-DRAG TO MOVE · RIGHT-CLICK FOR OPTIONS` : '360° ORBIT · CTRL TO SELECT / MOVE · ALT-DRAG TO BOX SELECT';
+  $('connect-node').disabled=!node || busy;
+  $('connect-node').textContent=pendingConnection?'Connect to selected':'Connect selected';
+  $('clear-connections').disabled=customConnections.length===0;
+  const source=state?.nodes.find(n=>n.id===pendingConnection);
+  $('selection-hint').textContent = source ? `CONNECT FROM ${source.label} · CTRL+ALT-CLICK A TARGET · ESC TO CANCEL` : selectedNodes.size ? `${selectedNodes.size} SELECTED · CTRL-DRAG TO MOVE · CTRL+ALT-CLICK TO CONNECT` : '360° ORBIT · ALT-DRAG TO BOX SELECT · CTRL+ALT-CLICK TO CONNECT';
   if (!node) { $('resource-detail').textContent = 'Ctrl-click a resource, or hold Alt and drag a box around several nodes.'; return; }
   const count = state.findings.filter(f=>f.nodeId === node.id && f.status === 'open').length;
   $('resource-detail').textContent = `${node.description} ${count ? `${count} open finding${count===1?'':'s'}.` : 'No open findings for this resource.'} ${canEditControls(node.id)?`Status: ${node.status || 'active'} · Action: ${node.action || 'normal'}.`:''}`;
@@ -341,6 +395,13 @@ $('findings').addEventListener('click',event=>{
 });
 $('event-filter').addEventListener('change',event=>{filter=event.target.value; if(state) renderEvents();});
 $('resource').addEventListener('change',event=>{selected=event.target.value;selectedNodes=new Set(selected?[selected]:[]);inspectResource();});
+$('connect-node').addEventListener('click',()=>connectNode(selected));
+$('clear-connections').addEventListener('click',()=>{
+  customConnections=[];pendingConnection='';connectionPointer=null;
+  const saved=saveConnections();
+  $('message').textContent=saved?'Added diagram links cleared.': 'Added links cleared for this visit; browser storage is unavailable.';
+  inspectResource();updateCursor();
+});
 $('environment-mode').addEventListener('change',event=>command('mode',{mode:event.target.value},'Environment changed. The map now shows this environment’s observations.'));
 $('agents').addEventListener('click',event=>{
   const button=event.target.closest('[data-ai]');
@@ -476,6 +537,14 @@ function render(now) {
       const a=nodes.get(e.source),b=nodes.get(e.target);if(!a||!b)continue;
       line(project(a.x,a.y,a.z),project(b.x,b.y,b.z), e.target==='logs'?'#35465c':'#416078',1,e.target==='logs'?[3,5]:[]);
     }
+    for(const e of customConnections) {
+      const a=nodes.get(e.source),b=nodes.get(e.target);if(!a||!b)continue;
+      line(project(a.x,a.y,a.z),project(b.x,b.y,b.z),'#72a9fa',1.8,[7,4]);
+    }
+    if(pendingConnection&&connectionPointer) {
+      const source=nodes.get(pendingConnection);
+      if(source)line(project(source.x,source.y,source.z),connectionPointer,'#72a9fa',1.3,[4,5]);
+    }
     // Event paths are rendered even when not permanent topology edges (e.g. exposure).
     const active=particles.filter(p=>now-p.start<p.duration);
     particles=active;
@@ -512,6 +581,7 @@ function drawNode(n) {
   const ground=project(n.x,-.6,n.z);
   line(ground,p,'#3a536877',1,[2,4]);
   if(selectedNodes.has(n.id)){ctx.beginPath();ctx.ellipse(p.x,p.y+size*.4,size*1.7,size,0,0,Math.PI*2);ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.stroke();}
+  if(pendingConnection===n.id){ctx.save();ctx.beginPath();ctx.ellipse(p.x,p.y+size*.3,size*1.95,size*1.45,0,0,Math.PI*2);ctx.strokeStyle='#72a9fa';ctx.lineWidth=2;ctx.setLineDash([4,3]);ctx.stroke();ctx.restore();}
   // Isometric prisms remain legible across orbital angles and small screens.
   const s=size;
   ctx.beginPath();ctx.moveTo(p.x-s,p.y-s*.3);ctx.lineTo(p.x,p.y-s*.85);ctx.lineTo(p.x+s,p.y-s*.3);ctx.lineTo(p.x,p.y+s*.25);ctx.closePath();ctx.fillStyle='#263f53';ctx.fill();ctx.strokeStyle=color;ctx.lineWidth=1;ctx.stroke();
@@ -537,7 +607,7 @@ function setSelection(id,toggle=false) {
   else{if(!toggle)selectedNodes.clear();if(id)selectedNodes.add(id);selected=id;}
   $('resource').value=selected;inspectResource();
 }
-function updateCursor(){canvas.classList.toggle('select-mode',(ctrlHeld||altHeld)&&!drag||drag?.mode==='marquee');canvas.classList.toggle('moving-node',drag?.mode==='move'&&drag.moved);canvas.classList.toggle('panning',drag?.mode==='pan');}
+function updateCursor(){canvas.classList.toggle('select-mode',(ctrlHeld||altHeld||pendingConnection)&&!drag||['marquee','connect'].includes(drag?.mode));canvas.classList.toggle('moving-node',drag?.mode==='move'&&drag.moved);canvas.classList.toggle('panning',drag?.mode==='pan');}
 // Capture the interaction mode at press time. Releasing Ctrl mid-drag must not
 // suddenly orbit the camera, and a right-drag must never open a context menu.
 canvas.addEventListener('pointerdown',event=>{
@@ -545,12 +615,12 @@ canvas.addEventListener('pointerdown',event=>{
   event.preventDefault();
   ctrlHeld=event.ctrlKey;altHeld=event.altKey;
   const hit=hitNode(event);
-  let operation=event.altKey&&event.button===0?'marquee':event.button===2?'context':event.ctrlKey&&event.button===0?'select':event.shiftKey?'pan':'orbit';
+  let operation=event.ctrlKey&&event.altKey&&event.button===0?'connect':event.altKey&&event.button===0?'marquee':event.button===2?'context':event.ctrlKey&&event.button===0?'select':event.shiftKey?'pan':'orbit';
   const base={pointerId:event.pointerId,button:event.button,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,hit:hit?.id,mode:operation,moved:false,selectionBefore:[...selectedNodes],selectedBefore:selected};
   if(operation==='marquee') {
     const point=screenPoint(event);
     Object.assign(base,{start:point,end:point});
-  } else if(event.ctrlKey&&[0,2].includes(event.button)&&hit){
+  } else if(operation!=='connect'&&event.ctrlKey&&[0,2].includes(event.button)&&hit){
     // Defer selection until drag threshold: a Ctrl-click still toggles membership,
     // while dragging an already-selected node moves the entire selected group.
     const ids=selectedNodes.has(hit.id)?selectedNodes:new Set([hit.id]);
@@ -561,6 +631,7 @@ canvas.addEventListener('pointerdown',event=>{
   drag=base;canvas.setPointerCapture(event.pointerId);updateCursor();
 });
 canvas.addEventListener('pointermove',event=>{
+  if(pendingConnection)connectionPointer=screenPoint(event);
   if(!drag||drag.pointerId!==event.pointerId)return;
   const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
   const wasMoved=drag.moved;
@@ -585,7 +656,9 @@ canvas.addEventListener('pointerup',event=>{
   if(!drag||drag.pointerId!==event.pointerId)return;
   const finished=drag;drag=null;updateCursor();
   if(canvas.hasPointerCapture(event.pointerId))canvas.releasePointerCapture(event.pointerId);
-  if(finished.mode==='move'){
+  if(finished.mode==='connect'){
+    if(!finished.moved)connectNode(finished.hit);
+  }else if(finished.mode==='move'){
     if(!finished.moved){if(finished.button===0)setSelection(finished.hit,true);else openNode(finished.hit);}
     else if(finished.translated){saveLayout();inspectResource();$('message').textContent=`Moved ${finished.originals.length} node${finished.originals.length===1?'':'s'} on the horizontal plane. Service connections are unchanged.`;}
     else $('message').textContent='The platform is edge-on here. Orbit slightly to move nodes along its plane.';
@@ -608,8 +681,9 @@ function cancelDrag(){
 }
 canvas.addEventListener('pointercancel',cancelDrag);
 canvas.addEventListener('lostpointercapture',cancelDrag);
-window.addEventListener('blur',()=>{ctrlHeld=false;altHeld=false;cancelDrag();updateCursor();});
-window.addEventListener('keydown',event=>{if(event.key==='Control')ctrlHeld=true;if(event.key==='Alt'){altHeld=true;if(drag)event.preventDefault();}if(event.key==='Escape'&&drag)cancelDrag();updateCursor();});
+canvas.addEventListener('pointerleave',()=>{if(!drag)connectionPointer=null;});
+window.addEventListener('blur',()=>{ctrlHeld=false;altHeld=false;cancelDrag();cancelConnection();updateCursor();});
+window.addEventListener('keydown',event=>{if(event.key==='Control')ctrlHeld=true;if(event.key==='Alt'){altHeld=true;if(drag)event.preventDefault();}if(event.key==='Escape'){if(drag)cancelDrag();cancelConnection();}updateCursor();});
 window.addEventListener('keyup',event=>{if(event.key==='Control')ctrlHeld=false;if(event.key==='Alt')altHeld=false;updateCursor();});
 canvas.addEventListener('wheel',event=>{event.preventDefault();zoom=Math.max(.65,Math.min(1.65,zoom-event.deltaY*.001));},{passive:false});
 $('home-view').addEventListener('click',()=>{yaw=-.42;pitch=.56;zoom=1;panX=0;panY=0;});

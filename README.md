@@ -229,13 +229,19 @@ The verifier checks actual running containers, network membership, resource limi
 | Shift + left/middle drag | Pan |
 | Mouse wheel | Zoom |
 | Ctrl + click | Toggle node selection |
+| Ctrl + Alt + click, then repeat on another node | Add a diagram link between the two nodes |
 | Ctrl + left drag | Move a node or selected group on its horizontal plane |
 | Alt + left drag | Box-select node centers |
 | Right click a selected node | Open shared information and status/action settings |
 | Ctrl + right drag | Move selected nodes without changing their height |
 | Escape during a drag | Cancel and restore prior selection/positions |
+| Escape while choosing a link endpoint | Cancel the pending link |
 
 Use **Inspect resource → Edit selected** for keyboard access. **Reset view** resets the camera; **Reset layout** resets node positions. Layout is saved in browser local storage separately for each environment and does not change connectivity. Operational controls remain server-owned. Group updates apply sequentially and report partial success if a later update fails.
+
+To draw a link, **Ctrl + Alt + click** its first node, then repeat on a different node. The first node is highlighted while the connection is pending. A successful connection finishes the pair and resets the gesture, ready for another pair; **Escape** cancels a pending connection. Self-links and duplicates are rejected. For keyboard access, choose the first resource in **Inspect resource**, activate **Connect selected**, then choose the second resource and activate **Connect to selected**.
+
+Added links customize the diagram; they do not alter service routing, permissions, or simulated traffic paths. They are saved in this browser separately for each environment. **Clear added links** removes the added diagram links while retaining the platform's built-in connections.
 
 In service mode, only the six real targets support operational edits. Pause/quarantine denies ordinary requests while health and authenticated control routes remain available. Observe annotates telemetry. These controls do not stop Docker processes or modify network isolation.
 
