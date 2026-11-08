@@ -1,0 +1,54 @@
+{
+  "measuredAt": "2026-11-08T03:31:28.738Z",
+  "command": "npm run eval:hacker",
+  "seeds": 30,
+  "attackTicks": 120,
+  "fixTicks": 100,
+  "results": {
+    "randomRun1": {
+      "runs": 30,
+      "breachedWithinWindow": 30,
+      "meanAttemptsToFirstBreach": 2.5,
+      "medianAttemptsToFirstBreach": 2,
+      "successRate": 41.8,
+      "weakSpotsFound": 95.3,
+      "weakSpotsFoundByEnd": 99.1,
+      "breachesOnFixedPaths": 0,
+      "attemptsOnFixedPaths": 290
+    },
+    "randomRun2": {
+      "runs": 30,
+      "breachedWithinWindow": 30,
+      "meanAttemptsToFirstBreach": 2.5,
+      "medianAttemptsToFirstBreach": 1.5,
+      "successRate": 40.1,
+      "weakSpotsFound": 92.2,
+      "weakSpotsFoundByEnd": 99,
+      "breachesOnFixedPaths": 0,
+      "attemptsOnFixedPaths": 240
+    },
+    "hackerRun1": {
+      "runs": 30,
+      "breachedWithinWindow": 30,
+      "meanAttemptsToFirstBreach": 2.8,
+      "medianAttemptsToFirstBreach": 2,
+      "successRate": 86.7,
+      "weakSpotsFound": 60.4,
+      "weakSpotsFoundByEnd": 86.8,
+      "breachesOnFixedPaths": 0,
+      "attemptsOnFixedPaths": 291
+    },
+    "hackerRun2": {
+      "runs": 30,
+      "breachedWithinWindow": 30,
+      "meanAttemptsToFirstBreach": 3,
+      "medianAttemptsToFirstBreach": 2,
+      "successRate": 85.3,
+      "weakSpotsFound": 54.9,
+      "weakSpotsFoundByEnd": 85.3,
+      "breachesOnFixedPaths": 0,
+      "attemptsOnFixedPaths": 170
+    }
+  },
+  "note": "Seeds 1..N; each seed gives both adversaries the same two randomized clouds. Random is the Hacker with learning switched off. Claude Attacker is not included: it needs paid API calls."
+}

@@ -6,6 +6,7 @@ import { Simulation } from './simulation.mjs';
 import { prepareContext, runAgent, validateDecision, servedModel, DEFAULT_MODEL } from '../ai/agents.mjs';
 import { performanceReport, controlText } from './performance.mjs';
 import { Hacker } from './hacker.mjs';
+import { streams } from './seed.mjs';
 
 const ROLES = ['attacker', 'searcher', 'builder'];
 // These addresses are deployment wiring, never input accepted from a browser or model.
@@ -35,8 +36,10 @@ async function internalJson(url, token, body, fetchImpl = fetch) {
 /** Coordinates modes and independent workers. It never executes model-generated code. */
 export class Runtime {
   constructor({simulation = new Simulation(), container = process.env.VORTEX_CONTAINER === '1', fetchImpl = fetch,
-    executorToken = process.env.LAB_EXECUTOR_TOKEN, agentToken = process.env.AGENT_CONTROL_TOKEN, hacker = new Hacker()} = {}) {
-    this.simulation = simulation; this.container = container; this.fetch = fetchImpl;
+    executorToken = process.env.LAB_EXECUTOR_TOKEN, agentToken = process.env.AGENT_CONTROL_TOKEN, hacker = new Hacker(), seed = null, proof = null} = {}) {
+    this.simulation = simulation; this.container = container; this.fetch = fetchImpl; this.seed = seed;
+    // Offline measurement from npm run eval:hacker, shown as-is on the dashboard.
+    this.proof = proof;
     this.executorToken = executorToken; this.agentToken = agentToken;
     this.mode = 'simulation'; this.real = new Simulation(); this.generation = null;
     this.seen = new Set(); this.realState = null; this.runs = []; this.busy = false; this.syncPromise = null;
@@ -82,7 +85,8 @@ export class Runtime {
     const flagged = this.flaggedIds();
     attempt.flagged = attempt.tripped || attempt.eventIds.some(id => flagged.has(id)) || attempt.clientIds.some(id => this.suspects().has(id));
     for (const fix of this.fixes) {
-      if (attempt.breached.includes(fix.policyKey) && fix.appliedTick < attempt.endTick && fix.failedTick === undefined) {
+      // Only a step the control let through after the fix counts, not one from before it.
+      if (fix.failedTick === undefined && attempt.controlEvents.some(e => e.control === fix.policyKey && e.allowed && e.tick > fix.appliedTick)) {
         fix.failedTick = attempt.endTick;
         this.log('builder', `Failed: ${fix.title} did not hold; the Hacker got through.`);
       }
@@ -119,9 +123,19 @@ export class Runtime {
   /** Searcher-side traffic events worth remembering: tripwire blocks and overloads. */
   logTraffic() {
     const traffic = this.simulation.snapshot().traffic;
-    for (const b of traffic?.autoBlocks ?? []) {
+    // A burst of blocks (a Hacker rotating addresses, say) becomes one line with a count, not a flood.
+    for (const b of [...(traffic?.autoBlocks ?? [])].reverse()) {
       const key = `block:${b.clientId}:${b.tick}`;
-      if (!this.seenTraffic.has(key)) { this.seenTraffic.add(key); this.log('searcher', `Tripwire blocked ${b.clientId}: ${b.reason}.`); }
+      if (this.seenTraffic.has(key)) continue;
+      this.seenTraffic.add(key);
+      const last = this.logs.find(l => l.agent === 'searcher' && l.run === this.runNumber && l.tripwire);
+      if (last && b.tick - last.tick <= 20) {
+        last.tripwire += 1;
+        last.text = `Tripwire blocked ${last.tripwire} addresses since tick ${last.tick}; latest ${b.clientId}: ${b.reason}.`;
+      } else {
+        this.log('searcher', `Tripwire blocked ${b.clientId}: ${b.reason}.`);
+        this.logs[0].tripwire = 1;
+      }
     }
     for (const o of traffic?.overloads ?? []) {
       const key = `overload:${o.tick}`;
@@ -231,6 +245,8 @@ export class Runtime {
     result.learningLogs = structuredClone(this.logs.slice(0, 40));
     // Memory across runs for the Claude agents; prepareContext decides what each one sees.
     result.runNumber = this.runNumber;
+    result.seed = this.seed;
+    result.proof = structuredClone(this.proof);
     result.earlierAttacks = structuredClone(this.earlierAttacks);
     result.agentNotes = { searcher: this.notesFor('searcher'), builder: this.notesFor('builder') };
     return result;
@@ -315,9 +331,29 @@ export class Runtime {
   async reset() {
     return this.locked(async()=>{
       // Reset lab leaves the environment paused so the admin starts traffic deliberately.
-      if (this.mode==='simulation') { this.simulation.reset(); this.simulation.setRunning(false); }
+      if (this.mode==='simulation') {
+        // A pinned demo seed covers its first cloud only: Reset moves on to a genuinely random one.
+        if (this.seed !== null) { this.seed = null; this.simulation.useRandomLayouts(); }
+        this.simulation.reset(); this.simulation.setRunning(false);
+      }
       else { this.ingest(await this.executor('/reset',{})); this.ingest(await this.executor('/running',{running:false})); }
       this.startNewRun(); this.runs=[]; this.attackHistory=[]; this.pendingAttack=null; this.botScore=null;
+    });
+  }
+  /** Presenter tool: start over exactly like a fresh server on this seed, so every judge group
+   * sees the same first cloud. Run 1, Hacker learning wiped and off, history and logs cleared, paused. */
+  async restartDemo(seed) {
+    if (!Number.isInteger(seed) || seed < 0 || seed > 2 ** 32 - 1) throw new Error('seed must be a whole number from 0 to 4294967295.');
+    this.simulatorOnly();
+    return this.locked(async()=>{
+      const random = streams(seed);
+      this.simulation = new Simulation({ layout: 'random', random: random.traffic, layoutRandom: random.layout });
+      this.simulation.setRunning(false);
+      this.hacker = new Hacker({ random: random.hacker });
+      this.seed = seed; this.runNumber = 1;
+      this.runs = []; this.attackHistory = []; this.pendingAttack = null; this.botScore = null;
+      this.fixes = []; this.logs = []; this.seenTraffic = new Set(); this.earlierAttacks = [];
+      this.hacker.newRun(this.runNumber);
     });
   }
   /** Turn the Hacker on or off. It runs only in the in-memory simulator. */

@@ -54,7 +54,7 @@ const REMEDIATIONS = {
   },
   metadataProtection: {
     title: 'Require session tokens for the metadata service',
-    description: 'Block application requests to the instance metadata address and require a session token, so a forged request cannot read the service credentials.',
+    description: 'Block application requests to the instance metadata address, require a session token, and rotate the service credentials, so a forged request cannot read them and stolen ones stop working.',
     tradeoff: 'Older tools that read metadata without a token must be updated first.',
   },
   secretsManager: {
@@ -121,9 +121,10 @@ const timeAt = (tick) => new Date(tick * 1000).toISOString().slice(11, 19);
 export class Simulation {
   /** layout 'classic' always starts with the original three weak spots;
    * 'random' draws a different set of three or four on every reset. */
-  constructor({ random = Math.random, layout = 'classic' } = {}) {
+  constructor({ random = Math.random, layout = 'classic', layoutRandom = random } = {}) {
     if (!['classic', 'random'].includes(layout)) throw new Error('layout must be classic or random.');
-    this._layout = layout; this._random = random;
+    // Layouts may draw from their own stream, so a seed gives the same clouds whatever the traffic did.
+    this._layout = layout; this._random = layoutRandom;
     this._traffic = new TrafficModel({ random }); this.reset();
   }
 
@@ -150,6 +151,9 @@ export class Simulation {
     this._traffic.reset();
     return this.snapshot();
   }
+
+  /** Stop following a seed: later resets draw fresh random clouds. */
+  useRandomLayouts(random = Math.random) { this._random = random; }
 
   /** Three or four controls start missing, chosen at random from the pool. */
   _drawWeakSpots() {
@@ -429,15 +433,18 @@ export class Simulation {
         context.cloudKey = attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'metadata-request', outcome: context.blocked ? 'denied' : 'allowed', kind: context.blocked ? 'blocked' : 'attack', principal: 'anonymous', control: 'metadataProtection', detail: context.blocked ? 'The metadata service requires a session token; the forged request returns nothing.' : 'A forged URL makes the application fetch its own cloud metadata and return the service credentials.' }).outcome === 'allowed';
       });
       case 'cloud-key-use': return one((context, attack) => {
-        const denied = !context.cloudKey;
-        attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'read-object', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'app-service', authenticated: !denied, bytes: denied ? 128 : 15000, ...(denied ? {} : { control: 'metadataProtection' }), detail: denied ? 'No stolen service credentials are available; the read is denied.' : 'Stolen service credentials read private objects directly, even if storage is private.' });
+        // The fix rotates the credentials, so ones stolen before it stop working.
+        const rotated = context.cloudKey && this._policies.metadataProtection;
+        const denied = !context.cloudKey || rotated;
+        attack({ source: 'attacker', target: 'storage', protocol: 'HTTPS', action: 'read-object', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'app-service', authenticated: !denied, bytes: denied ? 128 : 15000, ...(denied && !rotated ? {} : { control: 'metadataProtection' }), detail: rotated ? 'The stolen service credentials were rotated; the read is denied.' : denied ? 'No stolen service credentials are available; the read is denied.' : 'Stolen service credentials read private objects directly, even if storage is private.' });
       });
       case 'bundle-scrape': return one((context, attack) => {
         const leaked = !this._policies.secretsManager;
         context.apiKey = attack({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'bundle-read', outcome: 'allowed', principal: 'anonymous', detail: leaked ? 'The public app bundle contains an embedded admin API key.' : 'The public app bundle holds no keys.' }).outcome === 'allowed' && leaked;
       });
       case 'api-key-use': return one((context, attack) => {
-        const denied = !context.apiKey;
+        // A key scraped before the fix was rotated by it.
+        const denied = !context.apiKey || this._policies.secretsManager;
         context.blocked = denied;
         attack({ source: 'attacker', target: 'app', protocol: 'HTTPS', action: 'admin-api', outcome: denied ? 'denied' : 'allowed', kind: denied ? 'blocked' : 'attack', principal: 'api-key', authenticated: !denied, bytes: denied ? 128 : 9000, ...(denied && !this._policies.secretsManager ? {} : { control: 'secretsManager' }), detail: denied ? 'No valid key: the admin API refuses the request.' : 'The leaked key unlocks the admin API, which returns synthetic customer records.' });
       });

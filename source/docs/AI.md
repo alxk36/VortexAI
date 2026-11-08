@@ -63,6 +63,10 @@ Each Claude agent starts a run with short hints from earlier runs, never with co
 
 Containment: it can only pick step ids from the simulator's catalog, enters through the client edge like any user (so the tripwire, paused nodes and the Searcher's client view all apply), and never runs in the Docker lab. Its successes on fixed paths count against the Builder, and its attempts count toward the Searcher's flag rate.
 
+Is it really learning? `npm run eval:hacker` runs a seeded, offline comparison (no API calls) against a control: the same Hacker with learning switched off, on the same clouds. It writes `data/hacker-proof.json`, which the dashboard shows under Agent performance exactly as measured. The honest tradeoff it shows: the learner gets through far more often, while the random control covers slightly more weak spots, because the learner repeats what pays.
+
+For demos and recordings, `VORTEX_SEED=6 npm start` (or `VORTEX_SEED=6 npm run lab:up`) makes the sequence of clouds and the Hacker's choices repeat. Claude's answers still vary.
+
 Each simulator reset draws three or four weak spots from six controls: private storage, MFA, least-privilege database role, account lockout, metadata protection and secret storage. The Docker lab keeps its fixed three.
 
 ## Verification

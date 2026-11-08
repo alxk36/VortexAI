@@ -127,13 +127,16 @@ test('the Hacker learns: it finds a breach, loses interest once fixes hold, and 
   assert.match(state.performance.lines.hacker, /attempts got through/);
   assert.ok(state.hacker.trend.recent < 1, 'its reward fell once the fixes held');
 
+  const favorite = state.hacker.best;
   await rt.reset(); await rt.setRunning(true);
-  assert.ok(state.hacker.remembered > 0);
-  assert.equal(rt.snapshot().hacker.remembered, state.hacker.remembered, 'learning survives a reset');
+  const carried = rt.snapshot().hacker;
+  assert.ok(carried.remembered > 0 && carried.remembered <= 5, 'its best few attacks survive a reset');
+  assert.deepEqual(carried.best.chain, favorite.chain, 'its favorite comes along');
+  assert.equal(carried.best.value, Math.round(favorite.value * 50) / 100, 'trusted half as much on a new cloud');
   await ticks(rt, 120);
   const runTwo = rt.snapshot().hacker.runs.find(r => r.run === rt.runNumber);
   assert.ok(runTwo.attempts > 0);
-  assert.match(rt.snapshot().performance.lines.hacker, /last run: attempt \d+/);
+  assert.match(rt.snapshot().performance.lines.hacker, /got through \(\d+%\)/);
 
   await rt.forgetHacker();
   assert.equal(rt.snapshot().hacker.remembered, 0);
@@ -178,7 +181,7 @@ test('performance counts weak spots for this run and adds a Hacker line only whe
     { runAttempt: 2, breached: ['secretsManager'], touched: ['secretsManager'], endTick: 6, flagged: true },
   ], previousFirstBreach: 5, trend: { early: -1.2, recent: 1.5 } } });
   assert.equal(report.attacker.total, 2);
-  assert.equal(report.lines.hacker, '1 of 2 attempts got through · found 1 of 2 weak spots · first breach: attempt 2 (last run: attempt 5) · avg reward -1.2 → +1.5');
+  assert.equal(report.lines.hacker, '1 of 2 attempts got through (50%) · found 1 of 2 weak spots · first breach: attempt 2 · avg reward -1.2 → +1.5');
   assert.equal(report.verdict.status, 'at-risk');
   assert.equal(performanceReport({}).lines.hacker, undefined);
 });
@@ -208,4 +211,86 @@ test('the Hacker is simulator-only, and the server exposes start, stop and forge
   await rt.setHacker(true);
   assert.equal(rt.snapshot().hacker.enabled, true);
   await assert.rejects(() => rt.setHacker('yes'), /true or false/);
+});
+
+test('a demo seed repeats the same clouds, whatever the traffic does', async () => {
+  const { streams, parseSeed } = await import('../src/seed.mjs');
+  const layouts = seed => {
+    const r = streams(seed);
+    const sim = new Simulation({ layout: 'random', random: r.traffic, layoutRandom: r.layout });
+    const seen = [sim.snapshot().weakSpots.join()];
+    for (let i = 0; i < 3; i++) { for (let t = 0; t < i * 7; t++) sim.tick(); seen.push(sim.reset().weakSpots.join()); }
+    return seen;
+  };
+  assert.deepEqual(layouts(6), layouts(6));
+  assert.notDeepEqual(layouts(6), layouts(7));
+  assert.equal(parseSeed(''), null);
+  assert.equal(parseSeed('6'), 6);
+  assert.throws(() => parseSeed('six'), /whole number/);
+});
+
+test('a fix approved in the middle of a slow attempt is not counted as breached', async () => {
+  const rt = new Runtime({ simulation: new Simulation(), container: false, hacker: new Hacker({ random: seeded(1) }) });
+  rt.simulation._policies.metadataProtection = false;
+  rt.simulation._weakSpots = ['metadataProtection'];
+  rt.hacker.arms.set('x', { key: 'x', chain: ['discover', 'metadata-ssrf', 'cloud-key-use'], pace: 'slow', spread: 'single', tries: 1, value: 3, wins: 1, lastReward: 3 });
+  await rt.setHacker(true);
+  while (!rt.simulation.snapshot().recommendations.length) await ticks(rt, 1);
+  assert.ok(rt.hacker.current, 'stolen credentials, read not yet attempted');
+  await rt.applyRecommendation(rt.simulation.snapshot().recommendations[0].id);
+  await ticks(rt, 20);
+  const { performance, events } = rt.snapshot();
+  assert.ok(rt.hacker.attempts[0].breached.includes('metadataProtection'), 'the theft before the fix still counts as a breach');
+  assert.equal(performance.builder.failed, 0, 'but not as a failed fix');
+  assert.equal(performance.builder.after.breaches, 0);
+  assert.ok(events.some(e => e.action === 'read-object' && e.principal === 'app-service' && e.outcome === 'denied'), 'the stolen credentials were rotated');
+  assert.notEqual(performance.verdict.status, 'failing');
+});
+
+test('the dashboard proof shows only measured numbers from the comparison file', async () => {
+  const { readFileSync } = await import('node:fs');
+  const vm = (await import('node:vm')).default;
+  const app = readFileSync(new URL('../public/app.mjs', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('// Proof:'), app.indexOf('// End proof.'));
+  const escapeLine = app.split('\n').find(line => line.startsWith('const escape ='));
+  const render = proof => { const ctx = { proof }; vm.runInNewContext(`${escapeLine}\n${source}\nresult = proofMarkup(proof);`, ctx); return ctx.result; };
+  const proof = JSON.parse(readFileSync(new URL('../data/hacker-proof.json', import.meta.url), 'utf8'));
+  const markup = render(proof);
+  assert.match(markup, new RegExp(`${proof.results.randomRun1.successRate}%`));
+  assert.match(markup, new RegExp(`${proof.results.hackerRun1.successRate}%`));
+  assert.match(markup, /npm run eval:hacker/);
+  assert.equal(render(null), '');
+});
+
+test('Restart demo replays the pinned first cloud from scratch; Reset then releases the seed', async () => {
+  const { streams } = await import('../src/seed.mjs');
+  const r = streams(6);
+  const rt = new Runtime({ container: false, seed: 6, simulation: new Simulation({ layout: 'random', random: r.traffic, layoutRandom: r.layout }), hacker: new Hacker({ random: r.hacker }) });
+  const hero = rt.snapshot().weakSpots;
+  await rt.setHacker(true);
+  await ticks(rt, 30);
+  await rt.runScenario('exposed-storage');
+  await ticks(rt, 5);
+  await rt.reset();
+  assert.equal(rt.snapshot().seed, null, 'Reset releases the pin');
+  assert.equal(rt.runNumber, 2);
+
+  await rt.restartDemo(6);
+  const fresh = rt.snapshot();
+  assert.deepEqual(fresh.weakSpots, hero, 'the same hero cloud');
+  assert.equal(fresh.seed, 6);
+  assert.equal(fresh.runNumber, 1);
+  assert.equal(fresh.running, false, 'paused until the presenter resumes');
+  assert.equal(fresh.hacker.enabled, false);
+  assert.equal(fresh.hacker.remembered, 0, 'Hacker learning wiped');
+  assert.deepEqual([fresh.attackHistory.length, fresh.learningLogs.length, fresh.findings.length], [0, 0, 0]);
+
+  // Two restarts on the same seed play out identically.
+  const replay = async () => { await rt.restartDemo(6); await rt.setHacker(true); await rt.setRunning(true); await ticks(rt, 40); return rt.hacker.attempts.map(a => `${a.chain.join('>')}:${a.result}`); };
+  assert.deepEqual(await replay(), await replay());
+
+  rt.mode = 'lab';
+  await assert.rejects(() => rt.restartDemo(6), /simulator/);
+  rt.mode = 'simulation';
+  await assert.rejects(() => rt.restartDemo(-1), /whole number/);
 });

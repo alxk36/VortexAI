@@ -6,6 +6,7 @@ COPY --chown=node:node src/ ./src/
 COPY --chown=node:node public/ ./public/
 COPY --chown=node:node ai/ ./ai/
 COPY --chown=node:node lab/ ./lab/
+COPY --chown=node:node data/ ./data/
 USER node
 ENV NODE_ENV=production VORTEX_CONTAINER=1
 CMD ["node", "server.mjs"]

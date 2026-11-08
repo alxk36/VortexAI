@@ -18,10 +18,13 @@
 import { ATTACK_ACTIONS, planProblem } from './simulation.mjs';
 import { controlText } from './performance.mjs';
 
-export const REWARD = Object.freeze({ breach: 1, data: 1, nothing: -1, blocked: -0.5, tripped: -1, rotate: -0.3, perTick: -0.05 });
+export const REWARD = Object.freeze({ breach: 1, novel: 1, data: 1, nothing: -1, blocked: -0.5, tripped: -1, rotate: -0.3, perTick: -0.05 });
 const EXPLORE = 0.2;          // chance of trying something new even when the best attack pays off
+const EXPLOIT_MIN = 0.5;      // below this, nothing pays well enough to repeat: keep searching
 const LEARNING_RATE = 0.35;   // how far one result moves an attack's value
-const COOLDOWN_TICKS = 3;     // pause between attempts
+const COOLDOWN_TICKS = 3;
+const MEMORY_DECAY = 0.5;     // how much of an attack's value carries into a new run
+const CARRY_OVER = 5;         // how many of its best attacks it remembers into a new run     // pause between attempts
 const MAX_ARMS = 40;          // attacks remembered
 const MAX_ATTEMPTS = 120;     // attempt records kept
 const PROBES = Object.freeze({ fast: 2, slow: 1 }); // gateway requests sent with each part
@@ -33,8 +36,10 @@ const unique = list => [...new Set(list)];
 const average = list => list.length ? round(list.reduce((a, b) => a + b, 0) / list.length) : null;
 
 /** Score one finished attempt. */
-export function rewardFor({ breached = [], blockedBy = [], tookData = false, tripped = false, spread = 'single', ticks = 1 } = {}) {
+export function rewardFor({ breached = [], novel = [], blockedBy = [], tookData = false, tripped = false, spread = 'single', ticks = 1 } = {}) {
   let reward = breached.length ? breached.length * REWARD.breach + (tookData ? REWARD.data : 0) : REWARD.nothing;
+  // A weak spot it has not broken before this run is a new foothold, worth more than a repeat.
+  reward += REWARD.novel * novel.length;
   // Each control that stopped a step costs a little: a wasted, noisy step.
   reward += REWARD.blocked * blockedBy.length;
   if (tripped) reward += REWARD.tripped;
@@ -63,8 +68,10 @@ function dropStep(chain, stepId) {
 const keyOf = ({ chain, pace, spread }) => `${chain.join('>')}|${pace}|${spread}`;
 
 export class Hacker {
-  constructor({ random = Math.random } = {}) {
+  /** learn: false makes the control baseline: a random attacker that never uses what happened. */
+  constructor({ random = Math.random, learn = true } = {}) {
     this.random = random;
+    this.learn = learn;
     this.enabled = false;
     this.run = 1;
     this.forget();
@@ -83,11 +90,17 @@ export class Hacker {
 
   /** A new lab run: a fresh cloud and a fresh address, same experience. */
   newRun(run) {
+    // The cloud was re-randomized: carry over only its best few attacks, trusted half as much,
+    // so it tries what worked first without burning a whole run re-testing stale memories.
+    if (run !== this.run) {
+      const keep = [...this.arms.values()].filter(a => a.tries).sort((a, b) => b.value - a.value).slice(0, CARRY_OVER);
+      this.arms = new Map(keep.map(arm => [arm.key, { ...arm, value: round(arm.value * MEMORY_DECAY) }]));
+    }
     this.run = run;
     this.current = null;
     this.cooldown = 0;
     this.home = this._pick(HACKER_ADDRESSES);
-    if (!this.runStats.has(run)) this.runStats.set(run, { attempts: 0, breaches: 0, firstBreachAt: null, reward: 0 });
+    if (!this.runStats.has(run)) this.runStats.set(run, { attempts: 0, breaches: 0, firstBreachAt: null, reward: 0, found: [], stepTries: {} });
   }
 
   /** Highest-valued attack it has tried; ties go to the one tried less. */
@@ -99,8 +112,9 @@ export class Hacker {
 
   /** Exploit the best attack, or explore when nothing pays off or by chance. */
   choose() {
+    if (!this.learn) return { arm: this._arm(this._randomSpec()), explored: true };
     const best = this.best();
-    if (best && best.value > 0 && this.random() >= EXPLORE) return { arm: best, explored: false };
+    if (best && best.value >= EXPLOIT_MIN && this.random() >= EXPLORE) return { arm: best, explored: false };
     const spec = best && this.random() < 0.6 ? this._mutate(best) : this._randomSpec();
     return { arm: this._arm(spec), explored: true };
   }
@@ -111,7 +125,7 @@ export class Hacker {
     if (!this.current) {
       if (this.cooldown > 0) { this.cooldown -= 1; return null; }
       const { arm, explored } = this.choose();
-      this.current = { arm, explored, parts: sim.hackerParts(arm.chain), index: 0, context: { blocked: false }, startTick: sim._tick, events: [], addresses: new Set() };
+      this.current = { arm, explored, parts: sim.hackerParts(arm.chain), index: 0, context: { blocked: false }, startTick: sim._tick, events: [], addresses: new Set(), closedSteps: new Set() };
     }
     const current = this.current;
     const { pace, spread } = current.arm;
@@ -122,24 +136,34 @@ export class Hacker {
       current.addresses.add(address);
       const emit = fields => { const event = sim.hackerEmit(fields, address); current.events.push(event); return event; };
       for (let p = 0; p < PROBES[pace]; p++) emit({ source: 'attacker', target: 'gateway', protocol: 'HTTPS', action: 'request', outcome: 'allowed', principal: 'anonymous', bytes: 900, detail: 'Hacker: a request arrives at the gateway.' });
-      current.parts[current.index++].run(current.context, emit);
+      const part = current.parts[current.index++];
+      const before = current.events.length;
+      part.run(current.context, emit);
+      // Remember which steps a control stopped: that door is closed for every attack using it.
+      if (current.events.slice(before).some(e => e.outcome === 'denied' && e.control && e.control !== 'autoBlock')) current.closedSteps.add(part.actionId);
     }
     if (current.index < current.parts.length) return null;
     return this._finish(sim);
   }
 
   _finish(sim) {
-    const { arm, explored, events, startTick, addresses } = this.current;
+    const { arm, explored, events, startTick, addresses, closedSteps } = this.current;
     this.current = null;
     this.cooldown = COOLDOWN_TICKS;
     const real = events.filter(e => e.control && e.control !== 'autoBlock');
     const breached = unique(real.filter(e => e.outcome === 'allowed').map(e => e.control));
     const blockedBy = unique(real.filter(e => e.outcome === 'denied').map(e => e.control));
     const touched = unique(real.map(e => e.control));
+    // When each control was touched and whether it let the step through: a fix can be
+    // approved in the middle of a slow attempt, so before/after is judged per event.
+    const controlEvents = real.map(e => ({ control: e.control, tick: e.tick, allowed: e.outcome === 'allowed' }));
     const tripped = events.some(e => e.control === 'autoBlock') || [...addresses].some(a => sim._traffic.isBlocked(a, sim._tick));
     const tookData = breached.length > 0 && events.some(e => e.outcome === 'allowed' && (e.bytes ?? 0) >= 5000);
     const ticks = sim._tick - startTick + 1;
-    const reward = rewardFor({ breached, blockedBy, tookData, tripped, spread: arm.spread, ticks });
+    const stats = this.runStats.get(this.run);
+    const novel = breached.filter(c => !stats.found.includes(c));
+    stats.found.push(...novel);
+    const reward = rewardFor({ breached, novel, blockedBy, tookData, tripped, spread: arm.spread, ticks });
     // A tripped address is burned; the next attempt starts from a new one.
     if (tripped && arm.spread !== 'rotate') this.home = this._pick(HACKER_ADDRESSES.filter(a => a !== this.home));
 
@@ -150,10 +174,15 @@ export class Hacker {
     arm.tries += 1;
     if (breached.length) arm.wins += 1;
     arm.lastReward = reward;
+    // Generalize: every other remembered attack that relies on a closed step takes the same hit,
+    // so one blocked attempt retires a whole family of variants instead of each one separately.
+    if (closedSteps.size) for (const other of this.arms.values()) {
+      if (other !== arm && other.tries && other.value > reward && other.chain.some(step => closedSteps.has(step))) other.value = round(other.value + LEARNING_RATE * (reward - other.value));
+    }
     this._trim();
 
-    const stats = this.runStats.get(this.run);
     stats.attempts += 1;
+    for (const step of arm.chain) stats.stepTries[step] = (stats.stepTries[step] ?? 0) + 1;
     stats.reward = round(stats.reward + reward);
     const firstBreach = breached.length > 0 && stats.firstBreachAt === null;
     if (breached.length) { stats.breaches += 1; if (firstBreach) stats.firstBreachAt = stats.attempts; }
@@ -161,7 +190,7 @@ export class Hacker {
     const result = breached.length ? 'breached' : tripped ? 'tripped' : blockedBy.length ? 'blocked' : 'nothing';
     const attempt = {
       n: ++this.total, run: this.run, runAttempt: stats.attempts, key: arm.key, chain: [...arm.chain], pace: arm.pace, spread: arm.spread, explored,
-      startTick, endTick: sim._tick, ticks, result, breached, blockedBy, touched, tookData, tripped, reward, valueBefore, value: arm.value,
+      startTick, endTick: sim._tick, ticks, result, breached, blockedBy, touched, controlEvents, tookData, tripped, reward, valueBefore, value: arm.value,
       eventIds: events.map(e => e.id), clientIds: [...addresses], flagged: false,
     };
     attempt.lessons = this._lessons(attempt, bestBefore, firstBreach);
@@ -177,8 +206,7 @@ export class Hacker {
     const text = attackText(attempt);
     const sign = n => `${n > 0 ? '+' : ''}${n}`;
     if (firstBreach) {
-      const previous = this.previousRun();
-      lessons.push(`First breach this run on attempt ${attempt.runAttempt}${previous ? ` (run ${previous.run}: ${previous.firstBreachAt ? `attempt ${previous.firstBreachAt}` : 'none'})` : ''}: ${attempt.chain.join(' → ')} got through ${attempt.breached.map(controlText).join(', ')}.`);
+      lessons.push(`First breach this run on attempt ${attempt.runAttempt}: ${attempt.chain.join(' → ')} got through ${attempt.breached.map(controlText).join(', ')}.`);
     }
     // Announce a favorite only when it really pays (value 1 or more) and clearly beats the last one announced.
     const bestAfter = this.best();
@@ -203,12 +231,21 @@ export class Hacker {
 
   /** A new random attack: one or two goal steps with what they require. */
   _randomSpec() {
-    let chain = addStep([], this._pick(ATTACK_ACTIONS).id);
+    let chain = addStep([], this._goal());
     if (this.random() < 0.35) {
       const longer = addStep(chain, this._pick(ATTACK_ACTIONS).id);
       if (!planProblem(longer)) chain = longer;
     }
     return { chain, pace: this.random() < 0.5 ? 'fast' : 'slow', spread: this.random() < 0.3 ? 'rotate' : 'single' };
+  }
+
+  /** A goal step to explore: when learning, usually one it has tried least this run, so it keeps
+   * looking for new ways in instead of only circling its favorite (count-based exploration). */
+  _goal() {
+    if (!this.learn || this.random() < 0.3) return this._pick(ATTACK_ACTIONS).id;
+    const tries = this.runStats.get(this.run).stepTries;
+    const fewest = Math.min(...ATTACK_ACTIONS.map(a => tries[a.id] ?? 0));
+    return this._pick(ATTACK_ACTIONS.filter(a => (tries[a.id] ?? 0) === fewest)).id;
   }
 
   /** A small change to an attack: its pace, its spread, or one step added, dropped or swapped. */

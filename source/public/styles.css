@@ -15,3 +15,25 @@
 .clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.ai-run .headline{color:var(--text);font-size:12px;line-height:1.5;margin:6px 0}.ai-run details,.scenario-about{font-size:11px;color:var(--muted);line-height:1.6;margin:6px 0 10px}.ai-run summary,.scenario-about summary{cursor:pointer;color:#c3d0e1}.scenario-about p{margin:6px 0 0}
 .performance{margin:14px 0 4px;border:1px solid var(--line);border-radius:8px;padding:9px 12px;background:#0d1520}.performance>summary{cursor:pointer;font-size:11px;color:#c3d0e1;line-height:1.8}.verdict{display:inline-block;font-size:9px;letter-spacing:.7px;text-transform:uppercase;padding:3px 7px;border-radius:4px;margin-right:6px;color:var(--muted);background:#1b2534}.verdict.defended{color:var(--mint);background:#182e2c}.verdict.at-risk{color:var(--amber);background:#332e25}.verdict.failing{color:var(--red);background:#32232e}.perf-glance{color:var(--muted)}.verdict-text{font-size:11px;margin:10px 0 4px}.verdict-text.failing{color:var(--red)}.verdict-text.defended{color:var(--mint)}.verdict-text.at-risk{color:var(--amber)}.perf-row{display:grid;gap:3px;padding:9px 0;border-top:1px solid var(--line);font-size:11px}.perf-row small{color:var(--muted);font-size:10px;line-height:1.5}.performance h4{font-size:10px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}.learning-logs{list-style:none;padding:0;margin:0;font-size:10px;line-height:1.8;color:#b8c6d9;max-height:180px;overflow:auto}.log-agent{display:inline-block;min-width:62px;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}.log-agent.attacker{color:var(--red)}.log-agent.searcher{color:var(--blue)}.log-agent.builder{color:var(--mint)}
 .agent.hacker .agent-symbol{background:#2a2140;color:#c49bff}.agent.hacker .traffic-buttons{margin:9px 0 4px}.legend-dot.hacker{background:#c49bff}.log-agent.hacker{color:#c49bff}.hacker-attempts{list-style:none;padding:0;margin:6px 0 0;font-size:10px;line-height:2;color:var(--muted)}.hacker-attempts .history-result{min-width:70px}
+.proof-label{font-size:10px;color:var(--muted);margin:10px 0 4px}.proof-row{display:grid;grid-template-columns:96px minmax(0,1fr) 44px;gap:8px;align-items:center;font-size:11px;padding:2px 0}.proof-row .num{text-align:right;font-family:Consolas,ui-monospace,monospace;font-variant-numeric:tabular-nums}.proof-bar{width:100%;height:8px}.proof-bar rect{fill:var(--muted)}.proof-bar rect.track{fill:#1b2534}.proof-bar.hacker rect{fill:#c49bff}.proof-bar.hacker rect.track{fill:#1b2534}
+/* Instrument-panel pass for judges: system type, square corners, no decorative chrome.
+   Every label states a fact; color only marks outcomes (red got through, amber blocked, violet Hacker). */
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+button,select,input,.panel,.notice,dialog,.performance,.small-tag,.history-result,.origin-tag,.event-kind,.live-label,.traffic-field input,.node-fields input,.attack-history.overload{border-radius:2px}
+.canvas-wrap{background:none}
+.agent{grid-template-columns:1fr}
+.agent-status,.small-tag,.history-result,.origin-tag,.event-kind,.verdict,.finding-top,.notice-label,.live-label,.log-agent,.map-caption,th{text-transform:none;letter-spacing:0}
+.verdict{background:none;padding:0;margin-right:8px;font-size:12px;font-weight:600}
+.history-result{background:none;padding:0;min-width:70px;text-align:left;font-size:10px;font-weight:600}
+.origin-tag{background:none;padding:0;margin-right:8px;font-weight:600}
+.event-kind{background:none;padding:0;min-width:0;font-weight:600}
+.live-label{border:0;padding:0;font-size:11px}
+.run-status{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--muted)}
+.metrics span,td:first-child,.evidence,.num,.live-label{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.scenarios h2,.agents h2,.map-header h2,.event-heading h2{margin-top:0}
+.traffic-controls h3,.how-to h3{font-size:12px;margin:0 0 4px}
+h1{font-size:24px;letter-spacing:-.5px}
+
+.verdict.defended,.verdict.at-risk,.verdict.failing,.history-result.succeeded,.history-result.blocked,.origin-tag.internal,.origin-tag.external,.event-kind.attack,.event-kind.blocked,.event-kind.normal{background:none}
+.performance h4{text-transform:none;letter-spacing:0;font-size:11px;color:var(--text)}
+.demo-seed{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}.demo-seed input{width:58px;font:inherit;color:var(--text);background:#192536;border:1px solid #34465c;border-radius:2px;padding:6px 8px}.session-actions{align-items:center;flex-wrap:wrap}

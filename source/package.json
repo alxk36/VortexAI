@@ -12,6 +12,7 @@
     "lab:up": "node scripts/docker-task.mjs up",
     "lab:verify": "node scripts/docker-task.mjs verify",
     "lab:down": "node scripts/docker-task.mjs down",
-    "lab:status": "node scripts/docker-task.mjs status"
+    "lab:status": "node scripts/docker-task.mjs status",
+    "eval:hacker": "node scripts/eval-hacker.mjs"
   }
 }

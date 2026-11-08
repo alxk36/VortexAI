@@ -18,7 +18,7 @@ const DEFINITIONS = Object.freeze({
   attacker: 'Weak spots in this run that at least one attack run got through, and how many runs got through.',
   searcher: 'Attack runs and Hacker attempts flagged by a finding, an AI analysis citing their events or addresses, the tripwire, or a blocked-replay check. Hidden bots count after they are revealed.',
   builder: 'Applied fixes that blocked a replay and were never breached afterwards, and breaches on fixed paths (Attacker and Hacker) before and after each fix.',
-  hacker: 'Automated trial-and-error attempts this run, how soon it first got through compared with the previous run, and its average reward in its first five attempts ever versus its latest ten.',
+  hacker: 'Automated trial-and-error attempts this run, how many got through, which weak spots it found, and its average reward in its first five attempts ever versus its latest ten.',
 });
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const signed = n => `${n > 0 ? '+' : ''}${n}`;
@@ -42,7 +42,7 @@ export function performanceReport({ attackHistory = [], fixes = [], botScore = n
 
   // Hacker attempts read like attack runs: what they touched, what they got through, when they ended.
   const attempts = hacker?.attempts ?? [];
-  const hackerRuns = attempts.map(a => ({ touched: a.touched ?? [], exploited: a.breached ?? [], endTick: a.endTick, flagged: a.flagged }));
+  const hackerEvents = attempts.map(a => a.controlEvents ?? (a.touched ?? []).map(control => ({ control, tick: a.endTick, allowed: (a.breached ?? []).includes(control) })));
   const hackerStats = hacker ? {
     attempts: attempts.length,
     gotThrough: attempts.filter(a => (a.breached ?? []).length).length,
@@ -67,11 +67,20 @@ export function performanceReport({ attackHistory = [], fixes = [], botScore = n
   const before = { breaches: 0, attempts: 0 };
   const after = { breaches: 0, attempts: 0 };
   for (const fix of fixes) {
-    for (const h of [...attackHistory, ...hackerRuns]) {
+    for (const h of attackHistory) {
       if (!(h.touched ?? []).includes(fix.policyKey)) continue;
       const side = h.endTick <= fix.appliedTick ? before : after;
       side.attempts += 1;
       if ((h.exploited ?? []).includes(fix.policyKey)) side.breaches += 1;
+    }
+    // Hacker attempts are judged per event: an attempt that spans the fix counts on the side of each step.
+    for (const events of hackerEvents) {
+      const relevant = events.filter(e => e.control === fix.policyKey);
+      if (!relevant.length) continue;
+      const later = relevant.filter(e => e.tick > fix.appliedTick);
+      const side = later.length ? after : before;
+      side.attempts += 1;
+      if ((later.length ? later : relevant).some(e => e.allowed)) side.breaches += 1;
     }
   }
   const builder = {
@@ -113,9 +122,9 @@ function linesFor(attacker, searcher, builder, hacker) {
   };
   if (hacker) {
     const trend = hacker.trend ? ` · avg reward ${signed(hacker.trend.early)} → ${signed(hacker.trend.recent)}` : '';
-    const previous = hacker.previousFirstBreach ? ` (last run: attempt ${hacker.previousFirstBreach})` : '';
     lines.hacker = hacker.attempts
-      ? `${hacker.gotThrough} of ${plural(hacker.attempts, 'attempt')} got through · found ${hacker.foundControls.length} of ${hacker.total} weak spots · first breach: ${hacker.firstBreachAt ? `attempt ${hacker.firstBreachAt}` : 'none yet'}${previous}${trend}`
+      // Success rate leads: first-breach timing is mostly luck (see npm run eval:hacker), so no run-to-run race.
+      ? `${hacker.gotThrough} of ${plural(hacker.attempts, 'attempt')} got through (${Math.round(hacker.gotThrough / hacker.attempts * 100)}%) · found ${hacker.foundControls.length} of ${hacker.total} weak spots · first breach: ${hacker.firstBreachAt ? `attempt ${hacker.firstBreachAt}` : 'none yet'}${trend}`
       : `No attempts this run${trend}`;
   }
   return lines;

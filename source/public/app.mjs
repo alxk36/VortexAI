@@ -45,7 +45,7 @@ async function poll() {
       const result = await request('state');
       // An action may have started while the read was in flight. Its response wins.
       if (!busy && version === commandVersion) update(result);
-    } catch { $('live-label').textContent = 'DISCONNECTED'; $('message').textContent = 'The local lab is unavailable. Start it with npm start, then refresh.'; }
+    } catch { $('live-label').textContent = 'Disconnected'; $('message').textContent = 'The local lab is unavailable. Start it with npm start, then refresh.'; }
   }
   setTimeout(poll, 650);
 }
@@ -53,6 +53,8 @@ async function poll() {
 function renderControls() {
   $('pause').disabled = busy || !state;
   $('reset').disabled = busy || !state;
+  $('demo-restart').disabled = busy || !state || mode() !== 'simulation';
+  $('demo-seed').disabled = busy || mode() !== 'simulation';
   $('pause').textContent = state?.running ? 'Pause simulation' : 'Resume simulation';
   if (mode() === 'lab') $('pause').textContent = state?.running ? 'Pause lab traffic' : 'Resume lab traffic';
   $('environment-mode').disabled = busy || Boolean(state?.activeScenario);
@@ -86,7 +88,7 @@ function update(next) {
     try { layout = sanitizeLayout(JSON.parse(localStorage.getItem(layoutKey(nextMode)) || '{}'), state.nodes.map(n=>n.id)); }
     catch { layout = {}; }
     lastMode = nextMode;
-    $('scenarios').innerHTML = state.scenarios.map((s,i) => `<article class="scenario"><span class="scenario-number">SCENARIO / 0${i+1}</span><h3>${escape(s.name)}</h3><details class="scenario-about"><summary>What it does</summary><p>${escape(s.description)}</p></details><button data-scenario="${escape(s.id)}">${nextMode==='lab'?'Run lab scenario':'Run simulation'} <span aria-hidden="true">↗</span></button></article>`).join('');
+    $('scenarios').innerHTML = state.scenarios.map((s,i) => `<article class="scenario"><h3>${escape(s.name)}</h3><details class="scenario-about"><summary>What it does</summary><p>${escape(s.description)}</p></details><button data-scenario="${escape(s.id)}">${nextMode==='lab'?'Run in the lab':'Run'}</button></article>`).join('');
     $('resource').innerHTML = '<option value="">Select a node…</option>' + state.nodes.map(n => `<option value="${escape(n.id)}">${escape(n.label)}</option>`).join('');
     if (!state.nodes.some(n=>n.id===selected)) { selected=''; selectedNodes.clear(); }
     $('resource').value=selected;
@@ -100,7 +102,11 @@ function update(next) {
   seenEvents = new Set(state.events.map(e=>e.id));
   particles = particles.slice(-80);
   lastTick = state.tick;
-  $('live-label').textContent = state.running ? 'LIVE · TICK ' + state.tick : 'PAUSED · TICK ' + state.tick;
+  $('live-label').textContent = (state.running ? 'Live · tick ' : 'Paused · tick ') + state.tick;
+  // One factual status line instead of a tagline: which run, which cloud, what is attacking it.
+  const weak = nextMode === 'simulation' && Array.isArray(state.weakSpots) ? ` · ${state.weakSpots.length} weak spots hidden in this cloud` : '';
+  const hacker = state.hacker?.enabled && nextMode === 'simulation' ? ' · Hacker attacking' : '';
+  $('run-status').textContent = `Run ${state.runNumber ?? 1} · ${nextMode === 'lab' ? 'container lab' : 'in-memory cloud'}${nextMode === 'lab' ? '' : state.seed !== null && state.seed !== undefined ? ` · seed ${state.seed}` : ' · random cloud'}${weak}${hacker}`;
   $('environment-badge').textContent = nextMode==='lab'?'Isolated service lab':'Local simulation';
   $('runtime-detail').textContent = state.runtime?.detail || 'In-memory simulation ready.';
   $('environment-label').textContent = nextMode==='lab'?'CONTAINER SERVICE LAB':'SIMULATED ENVIRONMENT';
@@ -112,7 +118,7 @@ function update(next) {
   for (const [id,key] of [['total-events','totalEvents'],['attack-events','attackEvents'],['blocked-events','blockedEvents'],['open-findings','openFindings']]) $(id).textContent = state.metrics[key].toLocaleString();
   const agentsMarkup = ['attacker','searcher','builder'].map((key,i) => {
     const agent = state.agents[key];
-    return `<div class="agent ${key}"><div class="agent-symbol" aria-hidden="true">${['↗','◎','◇'][i]}</div><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
+    return `<div class="agent ${key}"><div><div class="agent-heading"><h3>${key[0].toUpperCase()+key.slice(1)}</h3><span class="agent-status">${escape(agent.status)}</span></div><p class="clamp" title="${escape(agent.detail)}">${escape(agent.detail)}</p><button class="compact agent-run" data-ai="${key}">${['Plan & run scenario','Analyze observations','Propose improvements'][i]}</button></div></div>`;
   }).join('');
   if(agentsMarkup!==lastAgentsMarkup){$('agents').innerHTML=agentsMarkup;lastAgentsMarkup=agentsMarkup;}
   renderPerformance();
@@ -149,6 +155,23 @@ function performanceMarkup(perf, logs) {
   const body = `<p class="verdict-text ${status}">${escape(perf.verdict.text)}</p>${rows}<h4>Learning logs</h4>${entries ? `<ul class="learning-logs">${entries}</ul>` : '<p class="muted small">Agents log what they learn as attacks, fixes and reveals happen.</p>'}`;
   return { summary, body };
 }
+// Proof: the offline comparison from npm run eval:hacker, shown exactly as measured.
+function proofBar(label, value, max, text, tone) {
+  const width = Math.max(0, Math.min(100, Math.round(value / max * 100)));
+  return `<div class="proof-row"><span>${escape(label)}</span><svg class="proof-bar ${tone}" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect width="100" height="6" class="track"/><rect width="${width}" height="6"/></svg><span class="num">${escape(text)}</span></div>`;
+}
+function proofMarkup(proof) {
+  const r = proof?.results;
+  if (!r?.randomRun1 || !r?.hackerRun1) return '';
+  const fixedBreaches = Object.values(r).reduce((a, x) => a + (x.breachesOnFixedPaths ?? 0), 0);
+  const fixedAttempts = Object.values(r).reduce((a, x) => a + (x.attemptsOnFixedPaths ?? 0), 0);
+  const day = String(proof.measuredAt || '').slice(0, 10);
+  return `<h4>Does the Hacker learn?</h4><p class="small muted">Same ${escape(proof.seeds)} seeded clouds for both. Random is the Hacker with learning switched off. Measured ${escape(day)} with ${escape(proof.command)}.</p>`
+    + `<p class="proof-label">Attempts that got through</p>${proofBar('Random', r.randomRun1.successRate, 100, `${r.randomRun1.successRate}%`, 'muted')}${proofBar('Hacker', r.hackerRun1.successRate, 100, `${r.hackerRun1.successRate}%`, 'hacker')}${r.hackerRun2 ? proofBar('Hacker, next run', r.hackerRun2.successRate, 100, `${r.hackerRun2.successRate}%`, 'hacker') : ''}`
+    + `<p class="proof-label">Weak spots found by the end of a run</p>${proofBar('Random', r.randomRun1.weakSpotsFoundByEnd ?? 0, 100, `${r.randomRun1.weakSpotsFoundByEnd}%`, 'muted')}${proofBar('Hacker', r.hackerRun1.weakSpotsFoundByEnd ?? 0, 100, `${r.hackerRun1.weakSpotsFoundByEnd}%`, 'hacker')}`
+    + `<p class="small">After the Builder's fixes: ${escape(fixedBreaches)} breaches on fixed paths in ${escape(fixedAttempts.toLocaleString())} attempts.</p>`;
+}
+// End proof.
 // End agent performance.
 // Keep the attempts list open across updates; it changes after every attempt.
 function renderHacker() {
@@ -160,7 +183,8 @@ function renderHacker() {
 }
 function renderPerformance() {
   if (!state.performance) return;
-  const { summary, body } = performanceMarkup(state.performance, state.learningLogs);
+  const { summary, body: report } = performanceMarkup(state.performance, state.learningLogs);
+  const body = report + proofMarkup(state.proof);
   if (summary !== lastPerfSummary) { $('performance-summary').innerHTML = summary; lastPerfSummary = summary; }
   if (body !== lastPerfBody) { $('performance-body').innerHTML = body; lastPerfBody = body; }
 }
@@ -216,7 +240,7 @@ function hackerMarkup(h) {
   const runs = (h.runs || []).filter(r => r.attempts).map(r => `Run ${escape(r.run)}: ${r.firstBreachAt ? `attempt ${escape(r.firstBreachAt)}` : 'none'}`).join(' · ');
   const trend = h.trend ? `<p class="small muted">Average reward: ${escape(signedReward(h.trend.early))} in its first five attempts, ${escape(signedReward(h.trend.recent))} in its latest ten (${escape(h.trend.attempts)} total).</p>` : '';
   const toggle = h.enabled ? ['stop', 'Stop Hacker'] : ['start', 'Start Hacker'];
-  return `<div class="agent hacker"><div class="agent-symbol" aria-hidden="true">✦</div><div><div class="agent-heading"><h3>Hacker</h3><span class="agent-status">${escape(status)}</span></div><p class="clamp" title="${escape(now)}">${escape(now)}</p><p class="clamp" title="${escape(favorite)}">${escape(favorite)}</p><div class="traffic-buttons"><button class="compact" data-hacker="${toggle[0]}">${toggle[1]}</button><button class="compact quiet" data-hacker="forget">Forget learning</button></div><details class="scenario-about"><summary>How it learns · recent attempts</summary><p>An automated outsider, not an AI model. It scores each attempt (+1 per weak spot it gets through, +1 for data, −1 for nothing, minus a little for blocks, tripwires, rotating addresses and time) and repeats what pays, exploring now and then. It keeps what it learned across resets. It only uses the allowlisted steps, inside the simulation.</p>${trend}${runs ? `<p class="small muted">First breach by run: ${runs}</p>` : ''}${rows ? `<ol class="hacker-attempts">${rows}</ol>` : ''}</details></div></div>`;
+  return `<div class="agent hacker"><div><div class="agent-heading"><h3>Hacker</h3><span class="agent-status">${escape(status)}</span></div><p class="clamp" title="${escape(now)}">${escape(now)}</p><p class="clamp" title="${escape(favorite)}">${escape(favorite)}</p><div class="traffic-buttons"><button class="compact" data-hacker="${toggle[0]}">${toggle[1]}</button><button class="compact quiet" data-hacker="forget">Forget learning</button></div><details class="scenario-about"><summary>How it learns · recent attempts</summary><p>An automated outsider, not an AI model. It scores each attempt (+1 per weak spot it gets through, +1 for data, −1 for nothing, minus a little for blocks, tripwires, rotating addresses and time) and repeats what pays, exploring now and then. It keeps what it learned across resets. It only uses the allowlisted steps, inside the simulation.</p>${trend}${runs ? `<p class="small muted">First breach by run: ${runs}</p>` : ''}${rows ? `<ol class="hacker-attempts">${rows}</ol>` : ''}</details></div></div>`;
 }
 // End hacker.
 
@@ -286,7 +310,12 @@ function inspectResource() {
   $('resource-detail').textContent = `${node.description} ${count ? `${count} open finding${count===1?'':'s'}.` : 'No open findings for this resource.'} ${canEditControls(node.id)?`Status: ${node.status || 'active'} · Action: ${node.action || 'normal'}.`:''}`;
 }
 $('pause').addEventListener('click',()=>command('running',{running:!state.running}, state.running?'Traffic generation paused.':'Traffic generation resumed.'));
-$('reset').addEventListener('click',()=>command('reset',{},mode()==='simulation'?'Lab reset and paused on a newly randomized cloud. Findings and counters are cleared; the Hacker keeps what it learned. Press Resume to start traffic.':'Lab reset and paused. All policies, findings, and counters returned to the vulnerable baseline. Press Resume to start traffic.'));
+$('demo-restart').addEventListener('click',()=>{
+  const seed=Number($('demo-seed').value);
+  if(!Number.isInteger(seed)||seed<0){$('message').textContent='Enter a whole-number seed, such as 6.';return;}
+  command('demo/restart',{seed},`Demo restarted on seed ${seed}: run 1, Hacker learning wiped, paused. Press Resume when you start.`);
+});
+$('reset').addEventListener('click',()=>command('reset',{},mode()==='simulation'?'Lab reset and paused on a new random cloud (any demo seed is released). Findings and counters are cleared; the Hacker keeps what it learned. Press Resume to start traffic.':'Lab reset and paused. All policies, findings, and counters returned to the vulnerable baseline. Press Resume to start traffic.'));
 $('traffic-apply').addEventListener('click',()=>{
   const users=Number($('traffic-users').value), bots=$('traffic-bots').checked;
   command('traffic',{users,bots},`Traffic set: ${users} user${users===1?'':'s'} online${bots?', with hidden bots among them. Run the Searcher, then reveal.':'.'}`);

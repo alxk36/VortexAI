@@ -4,11 +4,14 @@
  */
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Simulation } from './src/simulation.mjs';
 import { Runtime } from './src/runtime.mjs';
 import { sharedFindings } from './src/findings.mjs';
+import { Hacker } from './src/hacker.mjs';
+import { parseSeed, streams } from './src/seed.mjs';
 
 const PUBLIC_DIRECTORY = fileURLToPath(new URL('./public/', import.meta.url));
 const BODY_LIMIT = 4096;
@@ -118,7 +121,7 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
         if (request.method !== 'GET') throw fail('Use GET for this endpoint.', 405);
         return sendJson(response, 200, await simulation.snapshot());
       }
-      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run', '/api/traffic', '/api/bots/reveal', '/api/unblock', '/api/hacker', '/api/hacker/forget']);
+      const mutations = new Set(['/api/scenario', '/api/recommendation', '/api/running', '/api/reset', '/api/node', '/api/mode', '/api/ai/run', '/api/traffic', '/api/bots/reveal', '/api/unblock', '/api/hacker', '/api/hacker/forget', '/api/demo/restart']);
       if (mutations.has(path)) {
         if (request.method !== 'POST') throw fail('Use POST for this endpoint.', 405);
         const body = await readJson(request);
@@ -168,6 +171,12 @@ export function createServer({ simulation = new Simulation(), tickMs = 900, auto
           if (!simulation.forgetHacker) throw fail('The Hacker is unavailable.');
           await simulation.forgetHacker();
         }
+        if (path === '/api/demo/restart') {
+          validateFields(body, ['seed']);
+          if (!Number.isInteger(body.seed) || body.seed < 0 || body.seed > 2 ** 32 - 1) throw fail('seed must be a whole number.');
+          if (!simulation.restartDemo) throw fail('Demo restart is unavailable.');
+          await simulation.restartDemo(body.seed);
+        }
         if (path === '/api/ai/run') {
           validateFields(body,['agent']);
           if (!simulation.runAI) throw fail('Agent runtime is unavailable.');
@@ -212,8 +221,16 @@ if (isDirectRun) {
     console.error('PORT must be an integer from 1 to 65535.');
     process.exitCode = 1;
   } else {
-    // Every reset draws a new set of weak spots in the in-memory cloud.
-    const server = createServer({simulation:new Runtime({simulation:new Simulation({layout:'random'})})});
+    // Every reset draws a new set of weak spots in the in-memory cloud. VORTEX_SEED makes
+    // the sequence of clouds and the Hacker's choices repeatable, for demos and recordings.
+    const seed = parseSeed(process.env.VORTEX_SEED);
+    const random = seed === null ? null : streams(seed);
+    // The measured comparison from npm run eval:hacker, if it has been run.
+    let proof = null;
+    try { proof = JSON.parse(readFileSync(new URL('./data/hacker-proof.json', import.meta.url), 'utf8')); } catch {}
+    const server = createServer({simulation:new Runtime({seed, proof,
+      simulation:new Simulation({layout:'random', ...(random ? {random:random.traffic, layoutRandom:random.layout} : {})}),
+      ...(random ? {hacker:new Hacker({random:random.hacker})} : {})})});
     server.on('error', (error) => {
       console.error(`VortexAI could not start: ${error.message}`);
       process.exitCode = 1;
@@ -223,6 +240,7 @@ if (isDirectRun) {
     server.listen(port, process.env.VORTEX_CONTAINER === '1' ? '0.0.0.0' : '127.0.0.1', () => {
       console.log(`VortexAI local simulation: http://127.0.0.1:${port}`);
       console.log('Starts in simulator mode. Verified Docker services can be selected in the dashboard.');
+      if (seed !== null) console.log(`Demo seed ${seed}: clouds and Hacker choices repeat on every restart.`);
     });
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.once(signal, () => server.close());
